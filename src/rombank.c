@@ -185,8 +185,14 @@ bool rombank_verify_crc(struct rombank *rb, const char *name, int slot,
 	if (!present) {
 		LOG_DEBUG(1, "\t%s CRC32 INVALID (no image loaded)\n", name);
 	} else {
+		char listbuf[256];
+		crclist_snprintf(listbuf, sizeof(listbuf), crclist);
 		LOG_DEBUG(1, "\t%s CRC32 INVALID (got 0x%08x, list %s)\n",
-			  name, check_crc32, crclist ? crclist : "?");
+			  name, check_crc32, listbuf[0] ? listbuf : (crclist ? crclist : "?"));
+		if (check_crc32 == 0xb4c88d6c || check_crc32 == 0xff050d80) {
+			LOG_DEBUG(1, "\t(0x%08x is documented Super ECB; INVALID here is the CRC *list*, not a bad dump. Try -no-c)\n",
+				  check_crc32);
+		}
 	}
 	return 0;
 }

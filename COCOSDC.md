@@ -221,9 +221,12 @@ upstream XRoar.
 module: that name prints `UI module sdl2 not found: trying gtk3` and
 stays white.  Working video is the **SDL3 UI**, module name `sdl`.
 
-**A black window with `[module:sdl/ui]` and `Super Extended Colour BASIC
-CRC32 INVALID` is a bad `coco3.rom` dump**, not the UI.  Verify the ROM
-and, if needed, sanity-check with `-machine coco2b` (see below).
+**`CRC32 INVALID` is not a bad `coco3.rom` when the file is 32768 bytes
+and `zlib.crc32` is `0xb4c88d6c`.**  That value is the documented NTSC
+Super ECB CRC.  Compare does not endian-swap it, and it uses the same
+CRC-32 as Python `zlib`.  INVALID also does **not** stop BASIC from
+running (tape can play on a black screen).  CoCo 3 black with SDL3 is a
+video path issue, not a rejected ROM.
 
 ### Homebrew + configure (SDL3 UI)
 
@@ -285,11 +288,11 @@ build that still listed `sdl` in `-ui help`.
 | Window | Log | Cause | Fix |
 | --- | --- | --- | --- |
 | **White** / blank | `[module:gtk3/ui] GTK+ 3 UI` (or `UI module sdl2 not found: trying gtk3`) | GTK+ 3 UI on Mac | Use the **SDL3 UI**: `-ui sdl` after an SDL3 `--without-gtk3` build. **Never `-ui sdl2`.** |
-| **Black**, SDL3 UI is up | `Super Extended Colour BASIC CRC32 INVALID` | XRoar did not map Glen’s NTSC dump (wrong search path, or a different file).  The CRC table **does** accept `0xb4c88d6c`. | See “Why INVALID” below.  `-ram 2048` is a valid CoCo 3 size and is not the cause. |
+| **Black**, SDL3 UI is up, ROM loaded, tape plays | `CRC32 INVALID` (even for `0xb4c88d6c`) | SDL3 Metal vo (blend/scale-on-NULL), **not** a bad NTSC dump. INVALID is a list/conf diagnostic. | Rebuild this tip.  A/B with brew `xroar` (Cocoa) and `SDL_RENDER_DRIVER=opengl`.  `-ram 2048` is not the cause. |
+| **CoCo 2 VDG garbage** on SDL3 | `Colour BASIC` / `Extended Colour BASIC CRC32 INVALID` | Same SDL3 vo (wrong colours / alpha) plus possible list wipe; CoCo 2 ROMs are separate from `coco3.rom`. | Same A/B.  Need headerless `bas13.rom` + `extbas11.rom` for a real prompt. |
 
 Once `[module:sdl/ui] SDL3 UI` is in the log, a black screen is **not GTK3**.
-The CRC table **does** accept Glen’s NTSC dump.  Accepted Super ECB CRCs
-(`-crclist-print`, list `coco3`):
+Accepted Super ECB CRCs (`-crclist-print`, list `coco3`):
 
 | Dump | Filename | Size | CRC32 |
 | --- | --- | --- | --- |
@@ -297,11 +300,22 @@ The CRC table **does** accept Glen’s NTSC dump.  Accepted Super ECB CRCs
 | PAL Super Extended Colour BASIC | `coco3p.rom` | 32768 | `0xff050d80` (`-machine coco3p`) |
 
 Python `zlib.crc32` of a 32768-byte `coco3.rom` matching `0xb4c88d6c` is
-the right file.  If XRoar still logs `CRC32 INVALID`, it **did not hash
-that file**.  This is not a false CRC warning: with no (or the wrong)
-image mapped, the GIME has no BASIC and the window stays black.
+the right file.  XRoar hashes with the same CRC-32 (`crc32_block` /
+zlib).  The `@coco3` table stores `0xb4c88d6c` / `0xff050d80` as hex
+strings (`strtoul` base 16, `0x` prefix OK — not a swapped constant).
+**CRC verify does not gate fetch/execute or GIME output** (`has_secb` is
+only assigned).  So INVALID + black with a confirmed `0xb4c88d6c` dump
+means the compare list failed *and* the SDL3 framebuffer path failed;
+it does **not** mean the ROM was rejected.
 
-**Why an SDL3 Mac build misses `~/Library/XRoar/roms/coco3.rom`.**  Mac
+If Slot 0 already prints `CRC32 0xb4c88d6c` and you still see INVALID,
+the `@coco3` **list** was empty or overwritten (often
+`~/Library/XRoar/xroar.conf` from brew Cocoa autosave writing
+`crclist coco3=`).  This tip ignores empty `crclist` assigns, falls back
+to the documented Super ECB CRCs, and logs `got 0x…, list @coco3=…`.
+Try `-no-c` to skip user conf.
+
+**Why an SDL3 Mac build can miss `~/Library/XRoar/roms/coco3.rom`.**  Mac
 `ROMPATH` used to be gated on the Cocoa UI (`UI_COCOA`).  SDL3 disables
 SDL2, so Cocoa is off and the binary searched the Unix path only:
 
@@ -330,36 +344,63 @@ If you still see `INVALID`, read the rest of that line:
 | Log | Meaning |
 | --- | --- |
 | `Slot 0: (unpopulated)` + `CRC32 INVALID (no image loaded)` + `BASIC ROM not found (romlist @coco3, rompath …)` | XRoar never found a file.  Copy or pass `-rompath`. |
-| `CRC32 INVALID (got 0x……, list @coco3)` | It loaded *a* file, but not NTSC/PAL Super ECB.  Check `[rom] opened:` — often `~/.xroar/roms` or cwd, not the Library dump you crc’d. |
+| `CRC32 INVALID (got 0xb4c88d6c, list @coco3=…)` or `(empty)` / `(not defined)` | File **is** NTSC Super ECB.  List failed (conf).  Video can still be black — that is SDL3 vo, not this CRC. |
+| `CRC32 INVALID (got 0x……, list @coco3=0xb4c88d6c,0xff050d80)` with a *different* got | Loaded a different image.  Check `[rom] opened:`. |
 
-Until you rebuild this tip, either:
-
-```text
-src/xroar -rompath ~/Library/XRoar/roms -ui sdl -machine coco3 -v 2
-```
-
-or:
+Until you rebuild this tip, force Library roms **and** skip a Cocoa
+autosave conf that may have empty `crclist` lines:
 
 ```text
-mkdir -p ~/.xroar/roms
-cp ~/Library/XRoar/roms/coco3.rom ~/.xroar/roms/
+src/xroar -no-c -rompath ~/Library/XRoar/roms -ui sdl -machine coco3 -v 2
 ```
 
-Then re-run `./autogen.sh && ./configure --without-gtk3 && make -C src`
-so Library is searched by default.
-
-**coco2b sanity check** (does not use `coco3.rom`).  If video still looks
-broken on CoCo 3, confirm the SDL3 window can show a machine at all:
+**coco2b sanity check** (does not use `coco3.rom`):
 
 ```text
 ls -l ~/Library/XRoar/roms/bas13.rom ~/Library/XRoar/roms/extbas11.rom
-src/xroar -rompath ~/Library/XRoar/roms -ui sdl -machine coco2b -v 2
+src/xroar -no-c -rompath ~/Library/XRoar/roms -ui sdl -machine coco2b -v 2
 ```
 
 Need headerless `bas13.rom` (8192, Colour BASIC 1.3) and `extbas11.rom`
-(8192, Extended Colour BASIC 1.1).  A CoCo 2B BASIC prompt means the
-video path is fine and only the CoCo 3 image search remains.  NTSC
-sibling: `-machine coco2bus`.
+(8192, Extended Colour BASIC 1.1).  VDG garbage on SDL3 with a good
+pair is the same Metal/blend vo bug (CoCo 2 pixels show; CoCo 3 RGB
+often looks fully black).  NTSC sibling: `-machine coco2bus`.
+
+### A/B: stock XRoar vs this tip (CoCo 3 + SDL)
+
+cocosdc does **not** patch GIME or `vo_sdl3` vs this repo’s `main`.
+Black CoCo 3 is the naive SDL3 vo (Metal default blend, scale-mode on
+a NULL texture), not a ROM dump and not a CoCoSDC regression.
+
+1. **This tip, skip user conf** (CRC lists + rompath defaults only):
+
+   ```text
+   src/xroar -no-c -ui sdl -machine coco3 -v 2
+   ```
+
+   Want `[sdl/vo] renderer …`, Slot 0 `CRC32 0xb4c88d6c`, and
+   `CRC32 valid`.  `renderer metal` is the Mac default.
+
+2. **Stock Homebrew 1.12.1** (SDL2 + Cocoa, no cocosdc, no SDL3 Metal):
+
+   ```text
+   brew install xroar
+   xroar -machine coco3
+   ```
+
+   A CoCo 3 picture here means Glen’s ROM is fine and only this tree’s
+   `-ui sdl` vo is wrong.
+
+3. **This tip, OpenGL instead of Metal:**
+
+   ```text
+   SDL_RENDER_DRIVER=opengl src/xroar -no-c -ui sdl -machine coco3 -v 2
+   ```
+
+   Log should show `[sdl/vo] renderer opengl`.
+
+4. **Upstream 1.13 SDL3 tag without cocosdc** uses the same `vo_sdl3.c`
+   as this tip’s parent `main`.  Prefer brew 1.12.1 as the working A/B.
 
 The emulator binary is `src/xroar`.  Optional: `sudo make install`
 (default prefix `/usr/local`).
@@ -379,8 +420,9 @@ binary on PATH (`/opt/homebrew/opt/texinfo/bin` or
 ROM images go in `~/Library/XRoar/roms/` (see `README`, “Getting started
 under Mac OS X+”).  CoCo 3 needs `coco3.rom` as above; CoCo 2B needs
 `bas13.rom` + `extbas11.rom`.  A white window is still GTK3 (`-ui sdl`).
-Black + `CRC32 INVALID` on an SDL3 Mac build is usually **rompath**
-(Library vs `~/.xroar/roms`), not a bad NTSC CRC.
+Black + `CRC32 INVALID` on SDL3 with a confirmed `0xb4c88d6c` dump is
+the Metal vo (and maybe an empty crclist in `xroar.conf`), not a bad
+NTSC file.  Use `-no-c` and the A/B section above.
 
 Host-side tests (same as CI; no emulator):
 
@@ -428,9 +470,10 @@ are available later:
 2. Rebuild with `make -C src` (Texinfo / `makeinfo` not required).
 3. Run `src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -ui sdl -v 2`.
 4. Confirm `[module:sdl/ui] SDL3 UI` (white window = GTK3 — not this command),
-   `Super Extended Colour BASIC CRC32 valid` (black + `INVALID` → check
-   `[xroar] rompath` / `[rom] opened:` / Slot 0; try `-rompath ~/Library/XRoar/roms`
-   or `-machine coco2b`), `[part:cocosdc]`, and `SD card root:` in the log.
+   `[sdl/vo] renderer …`, Slot 0 `CRC32 0xb4c88d6c` and `CRC32 valid`
+   (use `-no-c` if INVALID with that CRC), `[part:cocosdc]`, and
+   `SD card root:` in the log.  Black CoCo 3 with SDL3 after that is the
+   vo path — A/B with `brew install xroar` / `SDL_RENDER_DRIVER=opengl`.
 5. If you have a minimal CommSDC probe (or Studio FileAccess):
    - `SDCOpenFile` / `$E0` with `"m:HELLO.TXT"` (256-byte name block), then
      `$80` LSN 0 — should return the file’s first 256 bytes (zero-padded).

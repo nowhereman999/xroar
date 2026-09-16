@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 
 #include "sds.h"
 #include "sdsx.h"
@@ -29,7 +30,6 @@
 #include "xalloc.h"
 
 #include "crclist.h"
-#include "xroar.h"
 
 /* User defined CRC lists */
 struct crclist {
@@ -75,7 +75,23 @@ static struct crclist *find_crclist(const char *name) {
 	return entry->data;
 }
 
+static unsigned count_useful_values(struct sdsx_list *values) {
+	unsigned n = 0;
+	if (!values) {
+		return 0;
+	}
+	for (unsigned i = 0; i < values->len; i++) {
+		const char *value = values->elem[i];
+		if (value && *value) {
+			n++;
+		}
+	}
+	return n;
+}
+
 // Assign a crclist.  Overwrites any existing list with provided name.
+// An empty assignment (e.g. `crclist coco3=` from a stripped xroar.conf)
+// keeps the existing list so builtin NTSC/PAL CRCs are not wiped.
 void crclist_assign(const char *name, struct sdsx_list *values) {
 	if (!name) {
 		return;
@@ -83,6 +99,10 @@ void crclist_assign(const char *name, struct sdsx_list *values) {
 
 	// find if there's an old list with this name
 	struct crclist *old_list = find_crclist(name);
+	if (count_useful_values(values) == 0) {
+		return;
+	}
+
 	if (old_list) {
 		// if so, remove its reference in crclist_list
 		crclist_list = slist_remove(crclist_list, old_list);
@@ -92,6 +112,9 @@ void crclist_assign(const char *name, struct sdsx_list *values) {
 
 	for (unsigned i = 0; i < values->len; i++) {
 		const char *value = values->elem[i];
+		if (!value || !*value) {
+			continue;
+		}
 		if (value[0] == '@' && 0 == strcmp(value+1, name)) {
 			// reference to this list - append current contents
 			if (old_list) {
@@ -112,8 +135,36 @@ void crclist_assign(const char *name, struct sdsx_list *values) {
 
 /* convert a string to integer and compare against CRC */
 static int crc_match(const char *crc_string, uint32_t crc) {
-	long long check = strtoll(crc_string, NULL, 16);
-	return (uint32_t)(check & 0xffffffff) == crc;
+	if (!crc_string || !*crc_string) {
+		return 0;
+	}
+	const char *p = crc_string;
+	while (*p == ' ' || *p == '\t') {
+		p++;
+	}
+	char *end = NULL;
+	unsigned long check = strtoul(p, &end, 16);
+	if (end != p && (uint32_t)check == crc) {
+		return 1;
+	}
+	// Decimal fallback if a conf file stored the CRC without 0x
+	check = strtoul(p, &end, 10);
+	return end != p && *end == '\0' && (uint32_t)check == crc;
+}
+
+// Documented Super Extended Colour BASIC CRCs.  Used if @coco3 is missing.
+static const uint32_t coco3_builtin_crc[] = {
+	0xb4c88d6c,  // NTSC
+	0xff050d80,  // PAL
+};
+
+static int match_coco3_builtin(uint32_t crc) {
+	for (unsigned i = 0; i < sizeof(coco3_builtin_crc) / sizeof(coco3_builtin_crc[0]); i++) {
+		if (crc == coco3_builtin_crc[i]) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 /* Match a provided CRC with values in a list.  Returns 1 if found. */
@@ -125,8 +176,12 @@ int crclist_match(const char *name, uint32_t crc) {
 	}
 	struct crclist *crclist = find_crclist(name+1);
 	/* found an appropriate list?  flag it and start scanning it */
-	if (!crclist)
+	if (!crclist) {
+		if (0 == strcmp(name + 1, "coco3")) {
+			return match_coco3_builtin(crc);
+		}
 		return 0;
+	}
 	struct slist *iter;
 	if (crclist->flag)
 		return 0;
@@ -144,7 +199,48 @@ int crclist_match(const char *name, uint32_t crc) {
 		}
 	}
 	crclist->flag = 0;
+	if (!match && 0 == strcmp(name + 1, "coco3")) {
+		match = match_coco3_builtin(crc);
+	}
 	return match;
+}
+
+int crclist_snprintf(char *buf, size_t n, const char *name) {
+	if (!buf || n == 0) {
+		return 0;
+	}
+	buf[0] = '\0';
+	if (!name) {
+		return snprintf(buf, n, "(null)");
+	}
+	if (name[0] != '@') {
+		return snprintf(buf, n, "%s", name);
+	}
+	struct crclist *crclist = find_crclist(name + 1);
+	if (!crclist) {
+		return snprintf(buf, n, "%s (not defined)", name);
+	}
+	if (!crclist->list) {
+		return snprintf(buf, n, "%s (empty)", name);
+	}
+	int used = snprintf(buf, n, "%s=", name);
+	if (used < 0) {
+		return used;
+	}
+	for (struct slist *iter = crclist->list; iter; iter = iter->next) {
+		const char *ent = iter->data;
+		if (!ent) {
+			continue;
+		}
+		int more = snprintf(buf + (used < (int)n ? used : (int)n - 1),
+				    used < (int)n ? n - (size_t)used : 0,
+				    "%s%s", ent, iter->next ? "," : "");
+		if (more < 0) {
+			return more;
+		}
+		used += more;
+	}
+	return used;
 }
 
 static void print_crclist_entry(struct crclist *list, void *user_data) {
