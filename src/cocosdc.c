@@ -1,11 +1,12 @@
 /** \file
  *
- *  \brief CoCoSDC cartridge (Phase C).
+ *  \brief CoCoSDC cartridge (Phase D).
  *
  *  Maps the SCS register contract used by Studio's CommSDC client onto a
  *  host directory (-sdc-root).  Mount/eject, directory/info/CWD, and
  *  256-byte logical sector R/W follow SDC_FileAccess.asm.  Stream $90/$91
- *  (512-byte sectors) follows SDC_StreamFile_Library.asm / SDC_BigLoadm.asm.
+ *  (512-byte sectors) follows SDC_StreamFile_Library.asm / SDC_BigLoadm.asm
+ *  / SDC_Play.asm (open/stream/abort; DAC timing is not in this layer).
  *
  *  This is not a VCC SDC.dll port.
  *
@@ -132,7 +133,7 @@ static const struct partdb_entry_funcs cocosdc_funcs = {
 const struct cart_partdb_entry cocosdc_part = {
 	.partdb_entry = {
 		.name = "cocosdc",
-		.description = "Darren Atkinson | CoCoSDC (Phase C)",
+		.description = "Darren Atkinson | CoCoSDC (Phase D)",
 		.funcs = &cocosdc_funcs
 	}
 };

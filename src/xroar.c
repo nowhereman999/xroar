@@ -608,9 +608,9 @@ static char const * const default_config[] = {
 	"cart-desc 'IDE Interface'",
 	"cart-type ide",
 	"cart-becker",
-	// CoCoSDC (Phase C: FileAccess + 512-byte stream)
+	// CoCoSDC (Phase D: FileAccess + stream + Play pacing)
 	"cart cocosdc",
-	"cart-desc 'CoCoSDC (Phase C)'",
+	"cart-desc 'CoCoSDC (Phase D)'",
 	"cart-type cocosdc",
 #ifndef HAVE_WASM
 #ifdef WANT_EXPERIMENTAL

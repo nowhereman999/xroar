@@ -25,6 +25,14 @@
  *  on $FF4A/$FF4B until EOF (BUSY cleared) or abort ($D0).  BIGLOADM /
  *  StreamFile poll READY for the first byte of every sector.
  *
+ *  Play (SDC_Play.asm) uses the same stream: OpenSDC_File_X_At_Start
+ *  (m: mount + $90/$91, default drive 1), 16-bit LDU/LDX $FF4A, then
+ *  interleaved 512-byte loads while the previous buffer is "played".
+ *  After the first two READY waits, Play does *not* loop on READY before
+ *  the next 512 bytes — the last DATREG read of a sector must already
+ *  have presented the next sector (or cleared BUSY at EOF).  BREAK
+ *  writes $D0 to $FF48 and does not poll BUSY; CLR $FF40 at exit.
+ *
  *  Extra FAILED bits used by SDC_FileAccess.asm:
  *    $04 invalid path, $08 miscellaneous, $10 not found, $20 in use.
  *
@@ -157,7 +165,11 @@ static inline uint8_t sdc_hw_take_rx(struct sdc_hw *h) {
 	if (h->xfer_index >= h->xfer_limit) {
 		if (h->streaming) {
 			/* Drop READY between sectors; keep BUSY.  cmd_ready
-			 * asks sdc_fs_execute to refill or finish. */
+			 * asks sdc_fs_execute to refill or finish.
+			 * Play's interleaved load (after ~166 dummy samples)
+			 * then blast-reads $FF4A without a READY wait loop,
+			 * so the cart must refill on this last byte — not
+			 * wait for a later $FF48 poll. */
 			h->xfer = SDC_XFER_NONE;
 			h->status = SDC_BUSY;
 			h->cmd_ready = true;
@@ -274,7 +286,15 @@ static inline void sdc_hw_write(struct sdc_hw *h, int reg, uint8_t D) {
 
 	case 0x08:
 		if (h->cmd_mode) {
-			sdc_hw_start_command(h, D);
+			if (D == 0xd0) {
+				/* Abort stream.  Play BREAK writes $D0 and
+				 * does not waitForIt; complete in this write
+				 * so BUSY is already clear. */
+				h->cmd = D;
+				sdc_hw_succeed(h);
+			} else {
+				sdc_hw_start_command(h, D);
+			}
 		}
 		break;
 

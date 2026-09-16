@@ -1,11 +1,12 @@
 /** \file
  *
- *  \brief CoCoSDC host-folder filesystem (Phase C).
+ *  \brief CoCoSDC host-folder filesystem (Phase D).
  *
  *  Command strings and 256-byte record layouts follow Studio's
  *  SDC_FileAccess.asm and the CoCo SDC User Guide (Darren Atkinson)
  *  opcode/block dictionary.  Stream ($90/$91) follows SDC_BigLoadm.asm
- *  / SDC_StreamFile_Library.asm: 512-byte sectors, LSN×512, abort $D0.
+ *  / SDC_StreamFile_Library.asm / SDC_Play.asm: 512-byte sectors, LSN×512,
+ *  abort $D0 (completed in sdc_hw_write so Play BREAK need not poll).
  *
  *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
@@ -1172,8 +1173,8 @@ void sdc_fs_execute(struct sdc_fs *fs, struct sdc_hw *hw) {
 		cmd_stream(fs, hw);
 		break;
 	case 0xd0:
-		/* Abort stream (User Guide / StreamTest.asm).  Harmless if
-		 * idle — CommSDC and Close_SD_File must not hang. */
+		/* Abort is handled in sdc_hw_write ($FF48=$D0).  Kept so a
+		 * cmd_ready $D0 (tests / older path) still cannot hang. */
 		sdc_hw_succeed(hw);
 		break;
 	default:
