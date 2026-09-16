@@ -124,12 +124,15 @@ test "x$with_sdl2" = "xno" && with_cocoa=no
 # pure white/blank window.  Skip it unless the user asked (--with-gtk3).
 # Video then comes from SDL3's `-ui sdl`, or SDL2+Cocoa (`-ui macosx`).
 # There is no UI module named `sdl2`.
+xroar_cv_darwin=no
 case "$host_os" in
 darwin*)
+	xroar_cv_darwin=yes
 	test -z "$with_gtk3" && with_gtk3=no
 	test -z "$with_gtk2" && with_gtk2=no
 	;;
 esac
+AM_CONDITIONAL([DARWIN], [test "x$xroar_cv_darwin" = "xyes"])
 
 AC_ARG_ENABLE([filereq_cli],
 	AS_HELP_STRING([--enable-filereq-cli], [include command-line file requester]) )

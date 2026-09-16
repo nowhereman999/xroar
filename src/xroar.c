@@ -870,6 +870,26 @@ static struct {
 # define CONFPATH "."
 #endif
 
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+// SDL3 Mac builds historically compiled the Unix ROMPATH/CONFPATH because
+// UI_COCOA is false without SDL2.  Always search ~/Library/XRoar first.
+#define XROAR_APPLE_ROMS "~/Library/XRoar/roms"
+#define XROAR_APPLE_CONF "~/Library/XRoar"
+
+static char *apple_prepend_dir(char *old, const char *prefix) {
+	if (old && strstr(old, "Library/XRoar"))
+		return old;
+	size_t n = strlen(prefix) + 1 + (old ? strlen(old) : 0) + 1;
+	char *np = xmalloc(n);
+	if (old && *old)
+		snprintf(np, n, "%s:%s", prefix, old);
+	else
+		snprintf(np, n, "%s", prefix);
+	free(old);
+	return np;
+}
+#endif
+
 /** Processes options from a builtin list, a configuration file, and the
  * command line.  Determines which modules to use (see ui.h, vo.h, ao.h) and
  * initialises them.  Starts an emulated machine.
@@ -944,6 +964,9 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 	if (!no_builtin) {
 		// Set a default ROM search path if required.
 		xroar.cfg.file.rompath = xstrdup(ROMPATH);
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+		xroar.cfg.file.rompath = apple_prepend_dir(xroar.cfg.file.rompath, XROAR_APPLE_ROMS);
+#endif
 		// Process builtin directives
 		for (unsigned i = 0; i < ARRAY_N_ELEMENTS(default_config); i++) {
 			xconfig_parse_line(&xroar_option_set, default_config[i]);
@@ -982,9 +1005,19 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 		if (!xroar_conf_path) {
 			xroar_conf_path = CONFPATH;
 		}
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+		sds apple_conf_path = NULL;
+		if (!strstr(xroar_conf_path, "Library/XRoar")) {
+			apple_conf_path = sdscatprintf(sdsempty(), "%s:%s", XROAR_APPLE_CONF, xroar_conf_path);
+			xroar_conf_path = apple_conf_path;
+		}
+#endif
 		if (!conffile) {
 			conffile = find_in_path(xroar_conf_path, "xroar.conf");
 		}
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+		sdsfree(apple_conf_path);
+#endif
 		if (conffile) {
 			(void)xconfig_parse_file(&xroar_option_set, conffile);
 			sdsfree(conffile);
@@ -1012,6 +1045,9 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 	if (ret != XCONFIG_OK) {
 		exit(EXIT_FAILURE);
 	}
+
+	LOG_MOD_DEBUG(2, "xroar", "rompath: %s\n",
+		      xroar.cfg.file.rompath ? xroar.cfg.file.rompath : "(none)");
 
 	// Unapplied machine options on the command line should apply to the
 	// one we're going to pick to run, so decide that now.

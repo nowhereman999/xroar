@@ -118,7 +118,8 @@ void rombank_report(struct rombank *rb, const char *par, const char *name) {
 		}
 		LOG_PRINT("\tSlot %3u: ", i);
 		if (rb->d[i]) {
-			LOG_PRINT("CRC32 0x%08x FILE %s", rb->slot[i].crc32, basename);
+			LOG_PRINT("CRC32 0x%08x FILE %s", rb->slot[i].crc32,
+				  (logging.level >= 2 && filename) ? filename : basename);
 			if (rb->slot[i].offset > 0) {
 				LOG_PRINT(" +0x%06lx", (unsigned long)rb->slot[i].offset);
 			}
@@ -181,7 +182,12 @@ bool rombank_verify_crc(struct rombank *rb, const char *name, int slot,
 		return 1;
 	}
 
-	LOG_DEBUG(1, "\t%s CRC32 INVALID\n", name);
+	if (!present) {
+		LOG_DEBUG(1, "\t%s CRC32 INVALID (no image loaded)\n", name);
+	} else {
+		LOG_DEBUG(1, "\t%s CRC32 INVALID (got 0x%08x, list %s)\n",
+			  name, check_crc32, crclist ? crclist : "?");
+	}
 	return 0;
 }
 

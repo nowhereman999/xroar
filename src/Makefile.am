@@ -228,6 +228,16 @@ xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"%LOCALAPPDATA%\\\\XRoar\"
 xroar_CFLAGS += -DROMPATH=\":%LOCALAPPDATA%\\\\XRoar\\\\roms:%USERPROFILE%\\\\Documents\\\\XRoar\\\\roms:%USERPROFILE%\\\\AppData\\\\Roaming\\\\XRoar\\\\roms\"
 xroar_CFLAGS += -DCONFPATH=\":%LOCALAPPDATA%\\\\XRoar:%USERPROFILE%\\\\Documents\\\\XRoar:%USERPROFILE%\\\\AppData\\\\Roaming\\\\XRoar\"
 else
+# Mac ROM/config dirs belong to Darwin, not the Cocoa UI.  An SDL3
+# `--without-gtk3` build has no UI_COCOA and used to search only
+# ~/.xroar/roms, so a good coco3.rom in ~/Library/XRoar/roms never loaded
+# (CRC32 INVALID, black screen).
+if DARWIN
+xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
+xroar_OBJCFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
+xroar_CFLAGS += -DROMPATH=\"~/Library/XRoar/roms:~/.xroar/roms:$(datadir)/xroar/roms:\"
+xroar_CFLAGS += -DCONFPATH=\"~/Library/XRoar:~/.xroar:$(sysconfdir):$(datadir)/xroar\"
+else
 if UI_COCOA
 xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
 xroar_OBJCFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
@@ -237,6 +247,7 @@ else
 xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/.xroar\"
 xroar_CFLAGS += -DROMPATH=\"~/.xroar/roms:$(datadir)/xroar/roms:\"
 xroar_CFLAGS += -DCONFPATH=\"~/.xroar:$(sysconfdir):$(datadir)/xroar\"
+endif
 endif
 endif
 endif

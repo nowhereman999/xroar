@@ -540,7 +540,11 @@ static bool coco3_finish(struct part *p) {
                 if (tmp) {
                         rombank_load_image(mcc3->ROM0, 0, tmp, 0);
                         sdsfree(tmp);
-                }
+                } else {
+			LOG_MOD_WARN("coco3", "BASIC ROM not found (romlist %s, rompath %s)\n",
+				     mc->extbas_rom,
+				     xroar.cfg.file.rompath ? xroar.cfg.file.rompath : "(none)");
+		}
 	}
 
 	// Report and check CRC (Super Extended Colour BASIC)

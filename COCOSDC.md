@@ -285,28 +285,81 @@ build that still listed `sdl` in `-ui help`.
 | Window | Log | Cause | Fix |
 | --- | --- | --- | --- |
 | **White** / blank | `[module:gtk3/ui] GTK+ 3 UI` (or `UI module sdl2 not found: trying gtk3`) | GTK+ 3 UI on Mac | Use the **SDL3 UI**: `-ui sdl` after an SDL3 `--without-gtk3` build. **Never `-ui sdl2`.** |
-| **Black**, SDL3 UI is up | `Super Extended Colour BASIC CRC32 INVALID` | `coco3.rom` missing, headered, wrong size, or a bad dump — not the UI | Verify the CoCo 3 ROM (below). `-ram 2048` is a valid CoCo 3 size; it is not why the screen is black. |
+| **Black**, SDL3 UI is up | `Super Extended Colour BASIC CRC32 INVALID` | XRoar did not map Glen’s NTSC dump (wrong search path, or a different file).  The CRC table **does** accept `0xb4c88d6c`. | See “Why INVALID” below.  `-ram 2048` is a valid CoCo 3 size and is not the cause. |
 
-Once `[module:sdl/ui] SDL3 UI` is in the log, a black screen is a **firmware dump** problem, not GTK3.
+Once `[module:sdl/ui] SDL3 UI` is in the log, a black screen is **not GTK3**.
+The CRC table **does** accept Glen’s NTSC dump.  Accepted Super ECB CRCs
+(`-crclist-print`, list `coco3`):
 
-**CoCo 3 ROM.** Put a headerless **32768**-byte `coco3.rom` in `~/Library/XRoar/roms/` (not `/Library/`). NTSC Super Extended Colour BASIC CRC32 is **`0xb4c88d6c`**. PAL is `coco3p.rom` (`0xff050d80`) with `-machine coco3p`. At `-v 2`:
+| Dump | Filename | Size | CRC32 |
+| --- | --- | --- | --- |
+| NTSC Super Extended Colour BASIC | `coco3.rom` | 32768 | **`0xb4c88d6c`** |
+| PAL Super Extended Colour BASIC | `coco3p.rom` | 32768 | `0xff050d80` (`-machine coco3p`) |
+
+Python `zlib.crc32` of a 32768-byte `coco3.rom` matching `0xb4c88d6c` is
+the right file.  If XRoar still logs `CRC32 INVALID`, it **did not hash
+that file**.  This is not a false CRC warning: with no (or the wrong)
+image mapped, the GIME has no BASIC and the window stays black.
+
+**Why an SDL3 Mac build misses `~/Library/XRoar/roms/coco3.rom`.**  Mac
+`ROMPATH` used to be gated on the Cocoa UI (`UI_COCOA`).  SDL3 disables
+SDL2, so Cocoa is off and the binary searched the Unix path only:
 
 ```text
+~/.xroar/roms:<prefix>/share/xroar/roms:<cwd>
+```
+
+A good dump in `~/Library/XRoar/roms/` is then never opened.  Slot 0 is
+`(unpopulated)` → `CRC32 INVALID (no image loaded)`.  Or a *different*
+`coco3.rom` from `~/.xroar/roms/` or the current directory is opened
+(`[rom] opened:` at `-v 2` shows the full path).  This tip prepends
+`~/Library/XRoar/roms` on Darwin even without Cocoa.
+
+At `-v 2` you want:
+
+```text
+[xroar] rompath: ~/Library/XRoar/roms:~/.xroar/roms:...
+[rom] opened: /Users/…/Library/XRoar/roms/coco3.rom (32768 bytes)
 [coco3:rom] Super Extended Colour BASIC (1 x 32K)
-	Slot   0: CRC32 0xb4c88d6c FILE coco3.rom
+	Slot   0: CRC32 0xb4c88d6c FILE …/coco3.rom
 	Super Extended Colour BASIC CRC32 valid
 ```
 
-`CRC32 INVALID` means the file XRoar opened is not that dump — re-dump / replace `coco3.rom`. Common mistakes: a header (file size not exactly 32768), a CoCo 1/2 BASIC image renamed `coco3.rom`, or a truncated copy.
+If you still see `INVALID`, read the rest of that line:
 
-**coco2b sanity check** (does not use `coco3.rom`). If video still looks broken on CoCo 3, confirm the SDL3 window can show a machine at all:
+| Log | Meaning |
+| --- | --- |
+| `Slot 0: (unpopulated)` + `CRC32 INVALID (no image loaded)` + `BASIC ROM not found (romlist @coco3, rompath …)` | XRoar never found a file.  Copy or pass `-rompath`. |
+| `CRC32 INVALID (got 0x……, list @coco3)` | It loaded *a* file, but not NTSC/PAL Super ECB.  Check `[rom] opened:` — often `~/.xroar/roms` or cwd, not the Library dump you crc’d. |
+
+Until you rebuild this tip, either:
+
+```text
+src/xroar -rompath ~/Library/XRoar/roms -ui sdl -machine coco3 -v 2
+```
+
+or:
+
+```text
+mkdir -p ~/.xroar/roms
+cp ~/Library/XRoar/roms/coco3.rom ~/.xroar/roms/
+```
+
+Then re-run `./autogen.sh && ./configure --without-gtk3 && make -C src`
+so Library is searched by default.
+
+**coco2b sanity check** (does not use `coco3.rom`).  If video still looks
+broken on CoCo 3, confirm the SDL3 window can show a machine at all:
 
 ```text
 ls -l ~/Library/XRoar/roms/bas13.rom ~/Library/XRoar/roms/extbas11.rom
-src/xroar -ui sdl -machine coco2b -v 2
+src/xroar -rompath ~/Library/XRoar/roms -ui sdl -machine coco2b -v 2
 ```
 
-Need headerless `bas13.rom` (8192, Colour BASIC 1.3) and `extbas11.rom` (8192, Extended Colour BASIC 1.1). A CoCo 2B BASIC prompt means the video path is fine and `coco3.rom` is the remaining problem. NTSC sibling: `-machine coco2bus`.
+Need headerless `bas13.rom` (8192, Colour BASIC 1.3) and `extbas11.rom`
+(8192, Extended Colour BASIC 1.1).  A CoCo 2B BASIC prompt means the
+video path is fine and only the CoCo 3 image search remains.  NTSC
+sibling: `-machine coco2bus`.
 
 The emulator binary is `src/xroar`.  Optional: `sudo make install`
 (default prefix `/usr/local`).
@@ -325,8 +378,9 @@ binary on PATH (`/opt/homebrew/opt/texinfo/bin` or
 
 ROM images go in `~/Library/XRoar/roms/` (see `README`, “Getting started
 under Mac OS X+”).  CoCo 3 needs `coco3.rom` as above; CoCo 2B needs
-`bas13.rom` + `extbas11.rom`.  A white window is still GTK3 (`-ui sdl`);
-black + `CRC32 INVALID` is still a bad `coco3.rom`.
+`bas13.rom` + `extbas11.rom`.  A white window is still GTK3 (`-ui sdl`).
+Black + `CRC32 INVALID` on an SDL3 Mac build is usually **rompath**
+(Library vs `~/.xroar/roms`), not a bad NTSC CRC.
 
 Host-side tests (same as CI; no emulator):
 
@@ -374,9 +428,9 @@ are available later:
 2. Rebuild with `make -C src` (Texinfo / `makeinfo` not required).
 3. Run `src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -ui sdl -v 2`.
 4. Confirm `[module:sdl/ui] SDL3 UI` (white window = GTK3 — not this command),
-   `Super Extended Colour BASIC CRC32 valid` (black + `CRC32 INVALID` →
-   fix `coco3.rom`; try `-machine coco2b` to prove video), `[part:cocosdc]`,
-   and `SD card root:` in the log.
+   `Super Extended Colour BASIC CRC32 valid` (black + `INVALID` → check
+   `[xroar] rompath` / `[rom] opened:` / Slot 0; try `-rompath ~/Library/XRoar/roms`
+   or `-machine coco2b`), `[part:cocosdc]`, and `SD card root:` in the log.
 5. If you have a minimal CommSDC probe (or Studio FileAccess):
    - `SDCOpenFile` / `$E0` with `"m:HELLO.TXT"` (256-byte name block), then
      `$80` LSN 0 — should return the file’s first 256 bytes (zero-padded).
