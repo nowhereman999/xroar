@@ -48,6 +48,11 @@ struct ui_sdl3_interface *ui_sdl_allocate(size_t usize) {
 	// Be sure we've not made more than one of these
 	assert(global_uisdl3 == NULL);
 
+#ifdef __APPLE__
+	if (!SDL_getenv("SDL_RENDER_DRIVER")) {
+		SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+	}
+#endif
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
 		LOG_MOD_ERROR("sdl", "failed to initialise video: %s\n", SDL_GetError());
 		return NULL;

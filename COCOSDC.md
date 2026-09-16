@@ -228,6 +228,28 @@ CRC-32 as Python `zlib`.  INVALID also does **not** stop BASIC from
 running (tape can play on a black screen).  CoCo 3 black with SDL3 is a
 video path issue, not a rejected ROM.
 
+### A/B: Homebrew 1.12.1 vs this fork (Glen)
+
+Confirmed with the **same** `~/Library/XRoar/roms/coco3.rom` (`0xb4c88d6c`):
+
+| Binary | UI | CRC log | Picture |
+| --- | --- | --- | --- |
+| `/opt/homebrew/bin/xroar` **1.12.1** | `macosx` + **SDL2** | `CRC32 0xb4c88d6c` **valid**, Disk Extended Color BASIC OK prompt | Works |
+| `~/xroar/src/xroar` this tip (before vo fix) | `sdl` **SDL3**/Metal | `CRC32 INVALID` | **Black** |
+
+Stock also mounts `disk11.rom` / `rsdos` by default (DECB banner).  That
+cart is **not** required for video: 1.12.1 still showed BASIC with the
+DECB banner, so a missing DOS ROM does not explain a black framebuffer.
+GIME in this fork is not patched vs `main`; the regression is the SDL3
+vo (Metal default blend + packed formats with an alpha channel).  1.12.1
+uses Cocoa menus on top of **SDL2** `vo_sdl2`, which does not have that
+bug.
+
+This tip: `@coco3` plus the NTSC value preloaded by `coco3.c` both
+accept `0xb4c88d6c` (same as 1.12.1); SDL3 uses opaque **XRGB** textures,
+`BLENDMODE_NONE`, and on Darwin prefers an **OpenGL** renderer unless
+`SDL_RENDER_DRIVER` is set.
+
 ### Homebrew + configure (SDL3 UI)
 
 ```text

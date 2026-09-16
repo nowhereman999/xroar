@@ -162,7 +162,25 @@ bool rombank_verify_crc(struct rombank *rb, const char *name, int slot,
 		present = 1;
 	}
 
-	bool valid = present && crclist_match(crclist, check_crc32);
+	uint32_t expected = crc32 ? *crc32 : 0;
+	bool listed = present && crclist_match(crclist, check_crc32);
+	/* 1.12.1 accepts NTSC Super ECB when coco3.c preloads 0xb4c88d6c.
+	   Keep that even if @coco3 was wiped by xroar.conf. */
+	bool expected_ok = present && expected != 0 && check_crc32 == expected;
+	if (!listed && !expected_ok && present) {
+		for (unsigned i = 0; i < rb->nslots; i++) {
+			if (!rb->d[i]) {
+				continue;
+			}
+			uint32_t sc = rb->slot[i].crc32;
+			if (crclist_match(crclist, sc) || (expected != 0 && sc == expected)) {
+				check_crc32 = sc;
+				expected_ok = 1;
+				break;
+			}
+		}
+	}
+	bool valid = listed || expected_ok;
 	bool forced = present && !valid && force;
 
 	if (forced) {

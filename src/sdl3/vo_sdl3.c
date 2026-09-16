@@ -121,22 +121,24 @@ bool sdl_vo_init(struct ui_sdl3_interface *uisdl3) {
 		// fall through
 
 	case VO_RENDER_FMT_RGBA8:
-		vosdl->texture.format = SDL_PIXELFORMAT_RGBA8888;
+		/* RGBX/XRGB: no alpha.  SDL3 Metal defaults to BLEND and a
+		 * swapped A byte makes the whole CoCo 3 framebuffer black. */
+		vosdl->texture.format = SDL_PIXELFORMAT_RGBX8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
 	case VO_RENDER_FMT_BGRA8:
-		vosdl->texture.format = SDL_PIXELFORMAT_BGRA8888;
+		vosdl->texture.format = SDL_PIXELFORMAT_BGRX8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
 	case VO_RENDER_FMT_ARGB8:
-		vosdl->texture.format = SDL_PIXELFORMAT_ARGB8888;
+		vosdl->texture.format = SDL_PIXELFORMAT_XRGB8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
 	case VO_RENDER_FMT_ABGR8:
-		vosdl->texture.format = SDL_PIXELFORMAT_ABGR8888;
+		vosdl->texture.format = SDL_PIXELFORMAT_XBGR8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
@@ -302,7 +304,28 @@ static void recreate_renderer(struct ui_sdl3_interface *uisdl3) {
 	SDL_PropertiesID props = SDL_CreateProperties();
 	SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, uisdl3->vo_window);
 	SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, vo->vsync ? 1 : 0);
+#ifdef __APPLE__
+	/* Homebrew 1.12.1 macosx+SDL2 shows CoCo 3 video.  SDL3's default
+	 * Metal renderer on this naive vo port stays black; prefer OpenGL
+	 * unless the user set SDL_RENDER_DRIVER. */
+	{
+		const char *want = SDL_getenv("SDL_RENDER_DRIVER");
+		if (!want || !*want) {
+			SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "opengl");
+		}
+		vosdl->sdl_renderer = SDL_CreateRendererWithProperties(props);
+		if (!vosdl->sdl_renderer && (!want || !*want)) {
+			LOG_MOD_SUB_DEBUG(1, "sdl", "vo", "OpenGL renderer failed: %s; trying default\n", SDL_GetError());
+			SDL_DestroyProperties(props);
+			props = SDL_CreateProperties();
+			SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, uisdl3->vo_window);
+			SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, vo->vsync ? 1 : 0);
+			vosdl->sdl_renderer = SDL_CreateRendererWithProperties(props);
+		}
+	}
+#else
 	vosdl->sdl_renderer = SDL_CreateRendererWithProperties(props);
+#endif
 	SDL_DestroyProperties(props);
 
 	if (vosdl->sdl_renderer) {
