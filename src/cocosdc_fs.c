@@ -1,10 +1,11 @@
 /** \file
  *
- *  \brief CoCoSDC host-folder filesystem (Phase B).
+ *  \brief CoCoSDC host-folder filesystem (Phase C).
  *
  *  Command strings and 256-byte record layouts follow Studio's
  *  SDC_FileAccess.asm and the CoCo SDC User Guide (Darren Atkinson)
- *  opcode/block dictionary.
+ *  opcode/block dictionary.  Stream ($90/$91) follows SDC_BigLoadm.asm
+ *  / SDC_StreamFile_Library.asm: 512-byte sectors, LSN×512, abort $D0.
  *
  *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
@@ -92,6 +93,8 @@ void sdc_fs_reset(struct sdc_fs *fs) {
 	listing_clear(fs);
 	free(fs->cwd_rel);
 	fs->cwd_rel = sdc_strdup("");
+	fs->stream_off = 0;
+	fs->stream_end = 0;
 }
 
 static void strip_slash(char *s) {
@@ -1077,6 +1080,66 @@ static void cmd_write(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 	sdc_hw_succeed(hw);
 }
 
+static void stream_fill(struct sdc_fs *fs, struct sdc_hw *hw) {
+	struct sdc_slot *s = &fs->slot[hw->cmd & 0x01];
+	uint32_t remain;
+	size_t n;
+
+	if (slot_ensure(s) != 0) {
+		sdc_hw_fail(hw, SDC_ERR_NOTFOUND);
+		return;
+	}
+	if (fs->stream_off >= fs->stream_end) {
+		sdc_hw_succeed(hw);
+		return;
+	}
+	remain = fs->stream_end - fs->stream_off;
+	n = remain > SDC_STREAM_SIZE ? SDC_STREAM_SIZE : remain;
+	memset(hw->block, 0, SDC_STREAM_SIZE);
+	if (fseek(s->fp, (long)fs->stream_off, SEEK_SET) != 0) {
+		sdc_hw_fail(hw, SDC_ERR_MISC);
+		return;
+	}
+	if (fread(hw->block, 1, n, s->fp) != n && ferror(s->fp)) {
+		sdc_hw_fail(hw, SDC_ERR_MISC);
+		return;
+	}
+	fs->stream_off += (uint32_t)n;
+	sdc_hw_start_stream_rx(hw);
+}
+
+/* $90/$91 (16-bit $FF4A/$FF4B) or $92/$93 (8-bit $FF4B).  LSN is a 512-byte
+ * stream sector, not a 256-byte FileAccess LBN.  Refill uses hw->streaming
+ * so a new $90 (start_command clears it) restarts from the latched LSN. */
+static void cmd_stream(struct sdc_fs *fs, struct sdc_hw *hw) {
+	struct sdc_slot *s;
+	uint32_t lsn;
+	uint64_t off;
+	uint32_t sz;
+
+	if (hw->streaming) {
+		stream_fill(fs, hw);
+		return;
+	}
+
+	s = &fs->slot[hw->cmd & 0x01];
+	hw->stream_8bit = (hw->cmd & 0x02) != 0;
+	if (slot_ensure(s) != 0) {
+		sdc_hw_fail(hw, SDC_ERR_NOTFOUND);
+		return;
+	}
+	lsn = lsn_of(hw);
+	off = (uint64_t)lsn * (uint64_t)SDC_STREAM_SIZE;
+	sz = slot_size(s);
+	if (off >= (uint64_t)sz) {
+		sdc_hw_fail(hw, 0);
+		return;
+	}
+	fs->stream_off = (uint32_t)off;
+	fs->stream_end = sz;
+	stream_fill(fs, hw);
+}
+
 void sdc_fs_execute(struct sdc_fs *fs, struct sdc_hw *hw) {
 	unsigned family;
 	unsigned drive;
@@ -1103,6 +1166,15 @@ void sdc_fs_execute(struct sdc_fs *fs, struct sdc_hw *hw) {
 		break;
 	case 0x80:
 		cmd_read(fs, hw, drive);
+		break;
+	case 0x90:
+	case 0x92:
+		cmd_stream(fs, hw);
+		break;
+	case 0xd0:
+		/* Abort stream (User Guide / StreamTest.asm).  Harmless if
+		 * idle — CommSDC and Close_SD_File must not hang. */
+		sdc_hw_succeed(hw);
 		break;
 	default:
 		sdc_hw_succeed(hw);

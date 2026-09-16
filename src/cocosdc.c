@@ -1,10 +1,11 @@
 /** \file
  *
- *  \brief CoCoSDC cartridge (Phase B).
+ *  \brief CoCoSDC cartridge (Phase C).
  *
  *  Maps the SCS register contract used by Studio's CommSDC client onto a
  *  host directory (-sdc-root).  Mount/eject, directory/info/CWD, and
- *  256-byte logical sector R/W follow SDC_FileAccess.asm.
+ *  256-byte logical sector R/W follow SDC_FileAccess.asm.  Stream $90/$91
+ *  (512-byte sectors) follows SDC_StreamFile_Library.asm / SDC_BigLoadm.asm.
  *
  *  This is not a VCC SDC.dll port.
  *
@@ -73,6 +74,11 @@ static const struct ser_struct ser_struct_cocosdc[] = {
 	SER_ID_STRUCT_ELEM(16, struct cocosdc, hw.latched_preg[0]),
 	SER_ID_STRUCT_ELEM(17, struct cocosdc, hw.latched_preg[1]),
 	SER_ID_STRUCT_ELEM(18, struct cocosdc, hw.latched_preg[2]),
+	SER_ID_STRUCT_ELEM(19, struct cocosdc, hw.xfer_limit),
+	SER_ID_STRUCT_ELEM(20, struct cocosdc, hw.streaming),
+	SER_ID_STRUCT_ELEM(21, struct cocosdc, hw.stream_8bit),
+	SER_ID_STRUCT_ELEM(22, struct cocosdc, fs.stream_off),
+	SER_ID_STRUCT_ELEM(23, struct cocosdc, fs.stream_end),
 };
 
 static bool cocosdc_read_elem(void *sptr, struct ser_handle *sh, int tag);
@@ -126,7 +132,7 @@ static const struct partdb_entry_funcs cocosdc_funcs = {
 const struct cart_partdb_entry cocosdc_part = {
 	.partdb_entry = {
 		.name = "cocosdc",
-		.description = "Darren Atkinson | CoCoSDC (Phase B)",
+		.description = "Darren Atkinson | CoCoSDC (Phase C)",
 		.funcs = &cocosdc_funcs
 	}
 };
@@ -190,7 +196,7 @@ static bool cocosdc_read_elem(void *sptr, struct ser_handle *sh, int tag) {
 	struct cocosdc *sdc = sptr;
 	switch (tag) {
 	case COCOSDC_SER_HW_BLOCK:
-		ser_read(sh, sdc->hw.block, SDC_BLOCK_SIZE);
+		ser_read(sh, sdc->hw.block, SDC_STREAM_SIZE);
 		return 1;
 	default:
 		return 0;
@@ -201,7 +207,7 @@ static bool cocosdc_write_elem(void *sptr, struct ser_handle *sh, int tag) {
 	struct cocosdc *sdc = sptr;
 	switch (tag) {
 	case COCOSDC_SER_HW_BLOCK:
-		ser_write(sh, tag, sdc->hw.block, SDC_BLOCK_SIZE);
+		ser_write(sh, tag, sdc->hw.block, SDC_STREAM_SIZE);
 		return 1;
 	default:
 		return 0;
@@ -301,7 +307,9 @@ static void cocosdc_log_completed(struct cocosdc *sdc) {
 			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;
 	case 0x90:
-		LOG_MOD_DEBUG(2, "cocosdc", "stream $%02X (stubbed)\n", sdc->hw.cmd);
+	case 0x92:
+		LOG_MOD_DEBUG(2, "cocosdc", "stream $%02X%s\n", sdc->hw.cmd,
+			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;
 	default:
 		if (sdc->hw.cmd == 0x1c) {
@@ -348,6 +356,9 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 		return D;
 	}
 	D = sdc_hw_read(&sdc->hw, reg);
+	if (sdc->hw.cmd_ready) {
+		sdc_fs_execute(&sdc->fs, &sdc->hw);
+	}
 	cocosdc_log_completed(sdc);
 	return D;
 }

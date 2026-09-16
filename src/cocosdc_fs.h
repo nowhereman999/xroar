@@ -1,6 +1,6 @@
 /** \file
  *
- *  \brief CoCoSDC host-folder filesystem (Phase B).
+ *  \brief CoCoSDC host-folder filesystem (Phase C).
  *
  *  Maps Studio SDC_FileAccess.asm commands onto a directory given as
  *  -sdc-root / sdc-root=:
@@ -9,6 +9,7 @@
  *  - $C0/$C1  'I' info, '>' dir page, 'C' CWD, 'V' version (builtin)
  *  - $80/$81  read logical sector (256 bytes at LSN*256)
  *  - $A0/$A1  write logical sector
+ *  - $90/$91  stream 512-byte sectors from LSN*512 until EOF or $D0
  *
  *  Paths are 8.3-ish, case-insensitive, relative to the SD CWD unless they
  *  begin with '/'.  This is not a VCC SDC.dll port.
@@ -51,6 +52,9 @@ struct sdc_fs {
 	unsigned dir_cap;
 	unsigned dir_index;
 	int listing_active;
+	/* Stream ($90/$91): byte offset in the mounted file. */
+	uint32_t stream_off;
+	uint32_t stream_end;
 };
 
 void sdc_fs_init(struct sdc_fs *fs);
