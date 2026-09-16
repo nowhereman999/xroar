@@ -221,6 +221,10 @@ upstream XRoar.
 module: that name prints `UI module sdl2 not found: trying gtk3` and
 stays white.  Working video is the **SDL3 UI**, module name `sdl`.
 
+**A black window with `[module:sdl/ui]` and `Super Extended Colour BASIC
+CRC32 INVALID` is a bad `coco3.rom` dump**, not the UI.  Verify the ROM
+and, if needed, sanity-check with `-machine coco2b` (see below).
+
 ### Homebrew + configure (SDL3 UI)
 
 ```text
@@ -276,6 +280,34 @@ If you see `[module:gtk3/ui] GTK+ 3 UI` instead, the window will be
 white — rebuild with `--without-gtk3` or pass `-ui sdl` on an SDL3
 build that still listed `sdl` in `-ui help`.
 
+### White vs black window
+
+| Window | Log | Cause | Fix |
+| --- | --- | --- | --- |
+| **White** / blank | `[module:gtk3/ui] GTK+ 3 UI` (or `UI module sdl2 not found: trying gtk3`) | GTK+ 3 UI on Mac | Use the **SDL3 UI**: `-ui sdl` after an SDL3 `--without-gtk3` build. **Never `-ui sdl2`.** |
+| **Black**, SDL3 UI is up | `Super Extended Colour BASIC CRC32 INVALID` | `coco3.rom` missing, headered, wrong size, or a bad dump — not the UI | Verify the CoCo 3 ROM (below). `-ram 2048` is a valid CoCo 3 size; it is not why the screen is black. |
+
+Once `[module:sdl/ui] SDL3 UI` is in the log, a black screen is a **firmware dump** problem, not GTK3.
+
+**CoCo 3 ROM.** Put a headerless **32768**-byte `coco3.rom` in `~/Library/XRoar/roms/` (not `/Library/`). NTSC Super Extended Colour BASIC CRC32 is **`0xb4c88d6c`**. PAL is `coco3p.rom` (`0xff050d80`) with `-machine coco3p`. At `-v 2`:
+
+```text
+[coco3:rom] Super Extended Colour BASIC (1 x 32K)
+	Slot   0: CRC32 0xb4c88d6c FILE coco3.rom
+	Super Extended Colour BASIC CRC32 valid
+```
+
+`CRC32 INVALID` means the file XRoar opened is not that dump — re-dump / replace `coco3.rom`. Common mistakes: a header (file size not exactly 32768), a CoCo 1/2 BASIC image renamed `coco3.rom`, or a truncated copy.
+
+**coco2b sanity check** (does not use `coco3.rom`). If video still looks broken on CoCo 3, confirm the SDL3 window can show a machine at all:
+
+```text
+ls -l ~/Library/XRoar/roms/bas13.rom ~/Library/XRoar/roms/extbas11.rom
+src/xroar -ui sdl -machine coco2b -v 2
+```
+
+Need headerless `bas13.rom` (8192, Colour BASIC 1.3) and `extbas11.rom` (8192, Extended Colour BASIC 1.1). A CoCo 2B BASIC prompt means the video path is fine and `coco3.rom` is the remaining problem. NTSC sibling: `-machine coco2bus`.
+
 The emulator binary is `src/xroar`.  Optional: `sudo make install`
 (default prefix `/usr/local`).
 
@@ -291,8 +323,10 @@ info manual: `brew install texinfo` and put Homebrew’s keg-only
 binary on PATH (`/opt/homebrew/opt/texinfo/bin` or
 `/usr/local/opt/texinfo/bin`).
 
-ROM images (Colour BASIC / Super Extended BASIC, etc.) go in
-`~/Library/XRoar/roms/`.  See `README` (“Getting started under Mac OS X+”).
+ROM images go in `~/Library/XRoar/roms/` (see `README`, “Getting started
+under Mac OS X+”).  CoCo 3 needs `coco3.rom` as above; CoCo 2B needs
+`bas13.rom` + `extbas11.rom`.  A white window is still GTK3 (`-ui sdl`);
+black + `CRC32 INVALID` is still a bad `coco3.rom`.
 
 Host-side tests (same as CI; no emulator):
 
@@ -339,7 +373,10 @@ are available later:
 1. `mkdir -p ~/sdc-root` and put a small file there, e.g. `HELLO.TXT`.
 2. Rebuild with `make -C src` (Texinfo / `makeinfo` not required).
 3. Run `src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -ui sdl -v 2`.
-4. Confirm `[module:sdl/ui] SDL3 UI`, `[part:cocosdc]`, and `SD card root:` in the log.
+4. Confirm `[module:sdl/ui] SDL3 UI` (white window = GTK3 — not this command),
+   `Super Extended Colour BASIC CRC32 valid` (black + `CRC32 INVALID` →
+   fix `coco3.rom`; try `-machine coco2b` to prove video), `[part:cocosdc]`,
+   and `SD card root:` in the log.
 5. If you have a minimal CommSDC probe (or Studio FileAccess):
    - `SDCOpenFile` / `$E0` with `"m:HELLO.TXT"` (256-byte name block), then
      `$80` LSN 0 — should return the file’s first 256 bytes (zero-padded).
