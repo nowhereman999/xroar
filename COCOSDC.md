@@ -106,6 +106,19 @@ upstream XRoar.  On a Mac:
    brew install autoconf automake pkg-config sdl2 libpng
    ```
 
+   The Texinfo manual under `doc/` is optional and is not needed for
+   cocosdc.  macOS does not ship `makeinfo`; Homebrew’s `texinfo` is
+   keg-only.  To build `xroar.info` as well:
+
+   ```text
+   brew install texinfo
+   export PATH="/opt/homebrew/opt/texinfo/bin:$PATH"
+   ```
+
+   On Intel Homebrew the prefix is `/usr/local/opt/texinfo/bin` instead
+   of `/opt/homebrew/opt/texinfo/bin`.  `$(brew --prefix texinfo)/bin`
+   also works.
+
 2. From a git checkout:
 
    ```text
@@ -116,6 +129,18 @@ upstream XRoar.  On a Mac:
 
    The emulator binary is `src/xroar`.  Optional: `sudo make install` (default
    prefix `/usr/local`).
+
+   A top-level `make` that fails with `makeinfo: command not found` /
+   `xroar.info` Error 127 does **not** mean cocosdc failed.  Autotools
+   builds `src` before `doc`, so `src/xroar` is already linked.  Confirm
+   with `-cart-type help` (`[part:cocosdc]`) and `-h` (`-sdc-root`).
+
+   Workaround after `./configure` — build the emulator and skip the
+   manual:
+
+   ```text
+   make -C src
+   ```
 
 3. ROM images (Colour BASIC / Super Extended BASIC, etc.) go in
    `~/Library/XRoar/roms/`.  See `README` (“Getting started under Mac OS X+”).
