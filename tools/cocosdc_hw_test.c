@@ -27,6 +27,13 @@ static int wait_for_it(struct sdc_hw *h) {
 	return -1; /* would time out */
 }
 
+/* Cart layer: VERSION/$1C, otherwise succeed (no payload). */
+static void pump(struct sdc_hw *h) {
+	if (!sdc_hw_take_builtin(h) && h->cmd_ready) {
+		sdc_hw_succeed(h);
+	}
+}
+
 /* Minimal CommSDC: A=cmd, B=param1, X=param2/3, optional 256-byte buffer. */
 static int comm_sdc(struct sdc_hw *h, uint8_t cmd, uint8_t b, uint16_t x,
 		    uint8_t *buf, int have_buf) {
@@ -39,6 +46,7 @@ static int comm_sdc(struct sdc_hw *h, uint8_t cmd, uint8_t b, uint16_t x,
 		return -1;
 	}
 	sdc_hw_write(h, 0x08, cmd);
+	pump(h);
 	if (cmd & 0x20) {
 		if (wait_for_it(h) != 1) {
 			sdc_hw_write(h, 0x00, 0);
@@ -47,6 +55,11 @@ static int comm_sdc(struct sdc_hw *h, uint8_t cmd, uint8_t b, uint16_t x,
 		for (int i = 0; i < SDC_BLOCK_SIZE; i++) {
 			uint8_t v = buf ? buf[i] : 0;
 			sdc_hw_write(h, (i & 1) ? 0x0b : 0x0a, v);
+		}
+		pump(h);
+		if (wait_for_it(h) < 0) {
+			sdc_hw_write(h, 0x00, 0);
+			return -1;
 		}
 		if (sdc_hw_read(h, 0x08) & BUSY) {
 			sdc_hw_write(h, 0x00, 0);

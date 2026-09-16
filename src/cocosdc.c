@@ -1,11 +1,10 @@
 /** \file
  *
- *  \brief CoCoSDC cartridge (Phase A).
+ *  \brief CoCoSDC cartridge (Phase B).
  *
- *  Maps the SCS register contract used by Studio's CommSDC client so a
- *  CoCo program can probe status and complete command-mode transactions
- *  without hanging.  Host directory mapping is recorded for later
- *  phases; mount/dir/file/stream operations are not implemented here.
+ *  Maps the SCS register contract used by Studio's CommSDC client onto a
+ *  host directory (-sdc-root).  Mount/eject, directory/info/CWD, and
+ *  256-byte logical sector R/W follow SDC_FileAccess.asm.
  *
  *  This is not a VCC SDC.dll port.
  *
@@ -36,6 +35,7 @@
 #include "xalloc.h"
 
 #include "cart.h"
+#include "cocosdc_fs.h"
 #include "cocosdc_hw.h"
 #include "logging.h"
 #include "part.h"
@@ -48,6 +48,7 @@
 struct cocosdc {
 	struct cart cart;
 	struct sdc_hw hw;
+	struct sdc_fs fs;
 	char *root;
 };
 
@@ -66,6 +67,12 @@ static const struct ser_struct ser_struct_cocosdc[] = {
 	SER_ID_STRUCT_UNHANDLED(COCOSDC_SER_HW_BLOCK),
 	SER_ID_STRUCT_ELEM(11, struct cocosdc, hw.xfer_index),
 	SER_ID_STRUCT_ELEM(12, struct cocosdc, hw.xfer),
+	SER_ID_STRUCT_ELEM(13, struct cocosdc, fs.cwd_rel),
+	SER_ID_STRUCT_ELEM(14, struct cocosdc, fs.slot[0].host_path),
+	SER_ID_STRUCT_ELEM(15, struct cocosdc, fs.slot[1].host_path),
+	SER_ID_STRUCT_ELEM(16, struct cocosdc, hw.latched_preg[0]),
+	SER_ID_STRUCT_ELEM(17, struct cocosdc, hw.latched_preg[1]),
+	SER_ID_STRUCT_ELEM(18, struct cocosdc, hw.latched_preg[2]),
 };
 
 static bool cocosdc_read_elem(void *sptr, struct ser_handle *sh, int tag);
@@ -119,7 +126,7 @@ static const struct partdb_entry_funcs cocosdc_funcs = {
 const struct cart_partdb_entry cocosdc_part = {
 	.partdb_entry = {
 		.name = "cocosdc",
-		.description = "Darren Atkinson | CoCoSDC (Phase A)",
+		.description = "Darren Atkinson | CoCoSDC (Phase B)",
 		.funcs = &cocosdc_funcs
 	}
 };
@@ -140,6 +147,7 @@ static struct part *cocosdc_allocate(void) {
 	c->detach = cocosdc_detach;
 
 	sdc_hw_reset(&sdc->hw);
+	sdc_fs_init(&sdc->fs);
 
 	return p;
 }
@@ -172,6 +180,7 @@ static bool cocosdc_finish(struct part *p) {
 
 static void cocosdc_free(struct part *p) {
 	struct cocosdc *sdc = (struct cocosdc *)p;
+	sdc_fs_free(&sdc->fs);
 	free(sdc->root);
 	sdc->root = NULL;
 	cart_rom_free(p);
@@ -216,11 +225,16 @@ static void cocosdc_apply_root(struct cocosdc *sdc) {
 
 	struct stat st;
 	if (stat(sdc->root, &st) != 0) {
-		LOG_MOD_WARN("cocosdc", "SD card root '%s' not found (Phase A still answers CommSDC)\n", sdc->root);
+		LOG_MOD_WARN("cocosdc", "SD card root '%s' not found\n", sdc->root);
+		(void)sdc_fs_set_root(&sdc->fs, sdc->root);
 		return;
 	}
 	if (!S_ISDIR(st.st_mode)) {
 		LOG_MOD_WARN("cocosdc", "SD card root '%s' is not a directory\n", sdc->root);
+		return;
+	}
+	if (sdc_fs_set_root(&sdc->fs, sdc->root) != 0) {
+		LOG_MOD_WARN("cocosdc", "SD card root '%s' could not be opened\n", sdc->root);
 		return;
 	}
 	LOG_MOD_DEBUG(1, "cocosdc", "SD card root: %s\n", sdc->root);
@@ -258,23 +272,36 @@ static void cocosdc_log_completed(struct cocosdc *sdc) {
 		if (sdc->hw.preg[0] == 'V') {
 			LOG_MOD_DEBUG(2, "cocosdc", "VERSION -> %02x%02x (BCD)\n",
 				      sdc->hw.preg[1], sdc->hw.preg[2]);
+		} else if (sdc->hw.preg[0] == 'I') {
+			LOG_MOD_DEBUG(2, "cocosdc", "INFO drive %u\n", drive);
+		} else if (sdc->hw.preg[0] == '>') {
+			LOG_MOD_DEBUG(2, "cocosdc", "DIR page\n");
+		} else if (sdc->hw.preg[0] == 'C') {
+			LOG_MOD_DEBUG(2, "cocosdc", "CWD\n");
 		} else {
-			LOG_MOD_DEBUG(2, "cocosdc", "ext $%02X param=$%02X (stubbed, drive %u)\n",
+			LOG_MOD_DEBUG(2, "cocosdc", "ext $%02X param=$%02X (drive %u)\n",
 				      sdc->hw.cmd, sdc->hw.preg[0], drive);
 		}
 		break;
 	case 0xe0:
-		LOG_MOD_DEBUG(2, "cocosdc", "mount/ext-data $%02X (ack only, Phase A)\n", sdc->hw.cmd);
+		if (sdc->hw.status & SDC_FAILED) {
+			LOG_MOD_DEBUG(2, "cocosdc", "mount/ext-data $%02X FAILED status=$%02X\n",
+				      sdc->hw.cmd, sdc->hw.status);
+		} else {
+			LOG_MOD_DEBUG(2, "cocosdc", "mount/ext-data $%02X\n", sdc->hw.cmd);
+		}
 		cocosdc_log_payload(sdc);
 		break;
 	case 0xa0:
-		LOG_MOD_DEBUG(2, "cocosdc", "write LSN $%02X (ack only, Phase A)\n", sdc->hw.cmd);
+		LOG_MOD_DEBUG(2, "cocosdc", "write LSN $%02X%s\n", sdc->hw.cmd,
+			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;
 	case 0x80:
-		LOG_MOD_DEBUG(2, "cocosdc", "read LSN $%02X (stubbed, no data block)\n", sdc->hw.cmd);
+		LOG_MOD_DEBUG(2, "cocosdc", "read LSN $%02X%s\n", sdc->hw.cmd,
+			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;
 	case 0x90:
-		LOG_MOD_DEBUG(2, "cocosdc", "stream $%02X (stubbed, Phase A)\n", sdc->hw.cmd);
+		LOG_MOD_DEBUG(2, "cocosdc", "stream $%02X (stubbed)\n", sdc->hw.cmd);
 		break;
 	default:
 		if (sdc->hw.cmd == 0x1c) {
@@ -282,7 +309,7 @@ static void cocosdc_log_completed(struct cocosdc *sdc) {
 		} else if (sdc->hw.cmd == 0xd0) {
 			LOG_MOD_DEBUG(2, "cocosdc", "abort $D0\n");
 		} else {
-			LOG_MOD_DEBUG(2, "cocosdc", "cmd $%02X (ack, Phase A stub)\n", sdc->hw.cmd);
+			LOG_MOD_DEBUG(2, "cocosdc", "cmd $%02X\n", sdc->hw.cmd);
 		}
 		break;
 	}
@@ -292,6 +319,9 @@ static void cocosdc_reset(struct cart *c, bool hard) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
 	cart_rom_reset(c, hard);
 	sdc_hw_reset(&sdc->hw);
+	if (hard) {
+		sdc_fs_reset(&sdc->fs);
+	}
 }
 
 static void cocosdc_attach(struct cart *c) {
@@ -317,7 +347,9 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 	if (reg < 0) {
 		return D;
 	}
-	return sdc_hw_read(&sdc->hw, reg);
+	D = sdc_hw_read(&sdc->hw, reg);
+	cocosdc_log_completed(sdc);
+	return D;
 }
 
 static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8_t D) {
@@ -337,6 +369,9 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 	}
 
 	sdc_hw_write(&sdc->hw, reg, D);
+	if (sdc->hw.cmd_ready) {
+		sdc_fs_execute(&sdc->fs, &sdc->hw);
+	}
 	cocosdc_log_completed(sdc);
 	return D;
 }

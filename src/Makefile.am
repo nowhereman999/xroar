@@ -137,6 +137,7 @@ xroar_SOURCES += \
 	ide.c ide.h \
 	idecart.c idecart.h \
 	cocosdc.c cocosdc_hw.h \
+	cocosdc_fs.c cocosdc_fs.h \
 	mooh.c \
 	mpi.c \
 	nx32.c \
