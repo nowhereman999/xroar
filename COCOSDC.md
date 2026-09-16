@@ -106,41 +106,30 @@ upstream XRoar.  On a Mac:
    brew install autoconf automake pkg-config sdl2 libpng
    ```
 
-   The Texinfo manual under `doc/` is optional and is not needed for
-   cocosdc.  macOS does not ship `makeinfo`; Homebrew’s `texinfo` is
-   keg-only.  To build `xroar.info` as well:
+   Texinfo is **not** needed for the emulator.
 
-   ```text
-   brew install texinfo
-   export PATH="/opt/homebrew/opt/texinfo/bin:$PATH"
-   ```
-
-   On Intel Homebrew the prefix is `/usr/local/opt/texinfo/bin` instead
-   of `/opt/homebrew/opt/texinfo/bin`.  `$(brew --prefix texinfo)/bin`
-   also works.
-
-2. From a git checkout:
+2. From a git checkout, build `src/xroar` (preferred; skips the manual):
 
    ```text
    ./autogen.sh
    ./configure
-   make
+   make -C src
    ```
 
    The emulator binary is `src/xroar`.  Optional: `sudo make install` (default
    prefix `/usr/local`).
 
-   A top-level `make` that fails with `makeinfo: command not found` /
-   `xroar.info` Error 127 does **not** mean cocosdc failed.  Autotools
-   builds `src` before `doc`, so `src/xroar` is already linked.  Confirm
-   with `-cart-type help` (`[part:cocosdc]`) and `-h` (`-sdc-root`).
+   A top-level `make` also tries to build `doc/xroar.info`.  macOS does
+   not ship `makeinfo`, so that can fail with `makeinfo: command not
+   found` / Error 127.  That does **not** mean cocosdc failed.  Autotools
+   builds `src` before `doc`, so `src/xroar` is already linked; a later
+   `make -C src` then reports `Nothing to be done`.  Confirm with
+   `-cart-type help` (`[part:cocosdc]`) and `-h` (`-sdc-root`).
 
-   Workaround after `./configure` — build the emulator and skip the
-   manual:
-
-   ```text
-   make -C src
-   ```
+   Optional — only if you want a full top-level `make` to also build the
+   info manual: `brew install texinfo` and put Homebrew’s keg-only
+   binary on PATH (`/opt/homebrew/opt/texinfo/bin` or
+   `/usr/local/opt/texinfo/bin`).
 
 3. ROM images (Colour BASIC / Super Extended BASIC, etc.) go in
    `~/Library/XRoar/roms/`.  See `README` (“Getting started under Mac OS X+”).
