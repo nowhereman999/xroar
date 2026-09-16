@@ -1,6 +1,6 @@
 name: CoCoSDC host tests
 
-# Linux CI for Phase B: register engine + real files under a temp sdc-root.
+# Linux CI for Phase C: register engine + temp sdc-root (mount/dir/LSN/stream).
 # Does not build XRoar or need SDL / ROMs / a CoCo.
 
 on:

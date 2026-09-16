@@ -593,7 +593,7 @@ xroar_SOURCES += \
 	filereq_cli.c
 endif
 
-# Host-side CoCoSDC tests: CommSDC register engine + a temporary sdc-root.
+# Host-side CoCoSDC tests: CommSDC register engine, temp sdc-root, stream.
 # No SDL, ROMs, or CoCo program.  `make check` runs them after ./configure;
 # ./tools/run-cocosdc-tests.sh works without autotools.
 

@@ -1,7 +1,9 @@
 /* Host-side CommSDC + sdc_fs against a temporary -sdc-root.
  *
  * Mirrors SDC_Comm.asm waitForIt / 256-byte $FF4A/$FF4B transfers and the
- * FileAccess commands Phase B implements (mount, dir/info/CWD, LSN R/W).
+ * FileAccess commands Phase B implements (mount, dir/info/CWD, LSN R/W)
+ * plus Phase C stream ($90/$91 512-byte sectors, abort $D0) as used by
+ * SDC_StreamFile_Library.asm / SDC_BigLoadm.asm.
  *
  * Compile / run (no XRoar, no SDL):
  *   ./tools/run-cocosdc-tests.sh
@@ -63,6 +65,42 @@ static void pump(void) {
 
 static void leave_cmd(void) {
 	sdc_hw_write(&hw, 0x00, 0);
+}
+
+/* StreamFile / BIGLOADM: not CommSDC.  $90 is READY per 512-byte sector. */
+static int stream_start(uint8_t cmd, uint32_t lsn) {
+	sdc_hw_write(&hw, 0x00, SDC_CMDMODE);
+	sdc_hw_write(&hw, 0x09, (uint8_t)(lsn >> 16));
+	sdc_hw_write(&hw, 0x0a, (uint8_t)(lsn >> 8));
+	sdc_hw_write(&hw, 0x0b, (uint8_t)lsn);
+	last_wait = wait_for_it();
+	if (last_wait < 0) {
+		leave_cmd();
+		return -1;
+	}
+	sdc_hw_write(&hw, 0x08, cmd);
+	pump();
+	last_wait = wait_for_it();
+	return last_wait;
+}
+
+/* Read one 512-byte stream sector (LDD $FF4A / LDU ,Y style).  pump() after
+ * each DATREG read so the last byte can refill or clear BUSY (cart path). */
+static int stream_read_512(uint8_t *buf) {
+	int i;
+
+	for (i = 0; i < (int)SDC_STREAM_SIZE; i++) {
+		buf[i] = sdc_hw_read(&hw, (i & 1) ? 0x0b : 0x0a);
+		pump();
+	}
+	last_wait = wait_for_it();
+	return last_wait;
+}
+
+static void stream_abort(void) {
+	sdc_hw_write(&hw, 0x08, 0xd0);
+	pump();
+	last_wait = wait_for_it();
 }
 
 /* CommSDC: A=cmd, B=param1, X=param2/3, optional 256-byte buffer. */
@@ -442,17 +480,122 @@ static void test_mkdir_delete(void) {
 	check(stat(path, &st) != 0, "SUBDIR removed");
 }
 
-static void test_escape_and_stream_stub(void) {
+static void test_escape(void) {
 	uint8_t block[SDC_BLOCK_SIZE];
 
 	put_cmd(block, "m:../../etc/passwd");
 	check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "path escape fails");
 	check((last_status & SDC_FAILED) != 0, "path escape FAILED");
+}
 
-	/* Phase B: $90 stream must not hang (Not Busy, no 256-byte payload). */
-	check(comm_sdc(0x90, 0, 0, block, 1) == 0, "stream $90 does not hang");
-	check(last_wait == 0, "stream $90 is Not Busy (no READY block in Phase B)");
-	check(comm_sdc(0xd0, 0, 0, NULL, 0) == 0, "abort $D0 does not hang");
+static void test_stream(void) {
+	uint8_t name[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_STREAM_SIZE];
+	uint8_t file[SDC_STREAM_SIZE * 2 + 40];
+	char path[PATH_MAX];
+	size_t i;
+	size_t nfile = sizeof(file);
+
+	for (i = 0; i < nfile; i++) {
+		file[i] = (uint8_t)(i & 0xff);
+	}
+	file[0] = 0xa0;
+	file[511] = 0xa1;
+	file[512] = 0xb0;
+	file[1023] = 0xb1;
+	file[1024] = 0xc0;
+	file[nfile - 1] = 0xc1;
+	if (snprintf(path, sizeof(path), "%s/STREAM.BIN", root_path) >= (int)sizeof(path) ||
+	    write_file(path, file, nfile) != 0) {
+		check(0, "write STREAM.BIN");
+		return;
+	}
+
+	/* Unmounted $90 fails (POLLREADY would hang; waitForIt sees FAILED). */
+	check(stream_start(0x90, 0) < 0, "stream with nothing mounted fails");
+	check(last_status & SDC_FAILED, "unmounted stream FAILED");
+	leave_cmd();
+
+	put_cmd(name, "m:STREAM.BIN");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "mount m:STREAM.BIN");
+
+	/* OpenSDC_File_X_At_Start: $90, POLLREADY, then 512-byte sectors. */
+	check(stream_start(0x90, 0) == 1, "stream $90 READY for first sector");
+	check((last_status & (SDC_BUSY | SDC_READY)) == (SDC_BUSY | SDC_READY),
+	      "stream first sector BUSY|READY");
+	check(stream_read_512(sec) == 1, "after sector 0 READY for sector 1");
+	check(sec[0] == 0xa0 && sec[511] == 0xa1 && sec[1] == 0x01,
+	      "stream sector 0 bytes");
+	check(memcmp(sec, file, SDC_STREAM_SIZE) == 0, "stream sector 0 matches host");
+
+	check(stream_read_512(sec) == 1, "after sector 1 READY for padded tail");
+	check(sec[0] == 0xb0 && sec[511] == 0xb1, "stream sector 1 boundary");
+	check(memcmp(sec, file + SDC_STREAM_SIZE, SDC_STREAM_SIZE) == 0,
+	      "stream sector 1 matches host");
+
+	check(stream_read_512(sec) == 0, "last stream sector then Not Busy (EOF)");
+	check(sec[0] == 0xc0 && sec[39] == 0xc1, "stream tail payload");
+	check(sec[40] == 0 && sec[511] == 0, "short last sector zero-padded to 512");
+	check(!(last_status & SDC_BUSY), "EOF clears BUSY");
+	leave_cmd();
+
+	/* LSN is a 512-byte stream sector (not FileAccess's 256-byte LBN). */
+	check(stream_start(0x90, 1) == 1, "stream from LSN 1");
+	check(stream_read_512(sec) == 1, "LSN 1 first sector is file+512");
+	check(sec[0] == 0xb0 && sec[511] == 0xb1, "LSN 1 skips first 512 bytes");
+	leave_cmd();
+
+	/* CLR $FF40 aborts an in-flight stream (Close_SD_File / BIGLOADM done). */
+	check(stream_start(0x90, 0) == 1, "stream for leave-cmd abort");
+	(void)sdc_hw_read(&hw, 0x0a);
+	pump();
+	leave_cmd();
+	check(!(sdc_hw_read(&hw, 0x08) & SDC_BUSY), "leave command mode clears stream BUSY");
+
+	/* $D0 abort (StreamTest.asm BREAK key) after the first sector. */
+	check(stream_start(0x90, 0) == 1, "stream for $D0 abort");
+	check(stream_read_512(sec) == 1, "sector 0 before abort");
+	check(sec[0] == 0xa0, "abort path still delivered sector 0");
+	stream_abort();
+	check(last_wait == 0 && !(last_status & SDC_FAILED),
+	      "abort $D0 is Not Busy");
+	leave_cmd();
+
+	put_cmd(name, "M:");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "eject STREAM.BIN");
+
+	/* Idle $D0 still must not hang (Phase B). */
+	check(comm_sdc(0xd0, 0, 0, NULL, 0) == 0, "idle abort $D0 does not hang");
+
+	/* Slot 1: StreamFile defaults SDC_DriveNumber to 1 ($E1 / $91). */
+	put_cmd(name, "m:GAMES/FOO.BIN");
+	check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "mount FOO.BIN slot 1");
+	check(stream_start(0x91, 0) == 1, "stream $91 READY");
+	check(stream_read_512(sec) == 0, "FOO.BIN one padded 512 then EOF");
+	check(sec[0] == 'F' && sec[1] == 'O' && sec[2] == 'O' && sec[3] == 0x5a,
+	      "slot 1 stream payload");
+	check(sec[299] == 0x5a && sec[300] == 0, "FOO.BIN 300 bytes padded in stream sector");
+	leave_cmd();
+	put_cmd(name, "M:");
+	check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "eject slot 1");
+
+	/* FileAccess 256-byte LSN still works on the stream file. */
+	put_cmd(name, "m:STREAM.BIN");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "reopen STREAM.BIN for $80");
+	memset(name, 0, sizeof(name));
+	check(comm_sdc(0x80, 0, 0, name, 1) == 0 && name[0] == 0xa0 &&
+	      name[255] == (uint8_t)255, "FileAccess LSN 0 is 256 bytes not 512");
+	put_cmd(name, "M:");
+	(void)comm_sdc(0xe0, 0, 0, name, 1);
+
+	/* LSN past EOF */
+	put_cmd(name, "m:HELLO.TXT");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "mount HELLO for past-EOF stream");
+	check(stream_start(0x90, 1) < 0, "stream LSN past EOF fails");
+	check(last_status & SDC_FAILED, "stream past EOF FAILED");
+	leave_cmd();
+	put_cmd(name, "M:");
+	(void)comm_sdc(0xe0, 0, 0, name, 1);
 }
 
 static void test_no_root(void) {
@@ -522,7 +665,8 @@ int main(void) {
 	test_slots_inuse();
 	test_dir_listing(hello, sizeof(hello));
 	test_mkdir_delete();
-	test_escape_and_stream_stub();
+	test_escape();
+	test_stream();
 	test_no_root();
 
 	sdc_fs_free(&fs);
@@ -532,6 +676,6 @@ int main(void) {
 		fprintf(stderr, "%d/%d check(s) failed\n", nfail, ncheck);
 		return 1;
 	}
-	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/slots/CWD)\n", ncheck);
+	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/slots/CWD)\n", ncheck);
 	return 0;
 }
