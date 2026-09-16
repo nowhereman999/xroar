@@ -210,6 +210,40 @@ int main(void) {
 		}
 	}
 
+	/* Play.asm: LDA $FF48 / ASRA / LBCC eof / BEQ wait.
+	 * BUSY only -> wait; BUSY|READY -> proceed; not busy -> EOF. */
+	{
+		uint8_t st;
+
+		sdc_hw_write(&h, 0x00, SDC_CMDMODE);
+		sdc_hw_start_stream_rx(&h);
+		st = sdc_hw_read(&h, 0x08);
+		if ((st & (BUSY | READY)) != (BUSY | READY)) {
+			nfail += fail("Play first poll expected BUSY|READY");
+		}
+		/* ASRA of $03: carry set (BUSY), result $01 (not Z) -> proceed */
+		if (!(st & BUSY) || !(st & READY)) {
+			nfail += fail("Play ASRA would not proceed on first sector");
+		}
+		/* Drain one sector so READY drops (BUSY remains, cmd_ready). */
+		for (int i = 0; i < SDC_STREAM_SIZE; i++) {
+			(void)sdc_hw_read(&h, (i & 1) ? 0x0b : 0x0a);
+		}
+		st = sdc_hw_read(&h, 0x08);
+		if ((st & (BUSY | READY)) != BUSY) {
+			nfail += fail("Play ASRA wait: BUSY without READY between sectors");
+		}
+		/* $D0 completes in the $FF48 write (Play BREAK does not pump). */
+		sdc_hw_write(&h, 0x08, 0xd0);
+		if (h.cmd_ready || h.streaming || (sdc_hw_read(&h, 0x08) & BUSY)) {
+			nfail += fail("Play $D0 abort left BUSY or cmd_ready");
+		}
+		if (h.cmd != 0xd0) {
+			nfail += fail("Play $D0 did not latch command");
+		}
+		sdc_hw_write(&h, 0x00, 0);
+	}
+
 	/* FAILED is sticky for waitForIt (bmi). */
 	sdc_hw_fail(&h, SDC_ERR_NOTFOUND);
 	if (wait_for_it(&h) >= 0 || !(sdc_hw_read(&h, 0x08) & FAILED) ||
@@ -221,6 +255,6 @@ int main(void) {
 		fprintf(stderr, "%d test(s) failed\n", nfail);
 		return 1;
 	}
-		puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET/latch/RX/stream-sector ok");
+		puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET/latch/RX/stream-sector/Play-abort ok");
 	return 0;
 }

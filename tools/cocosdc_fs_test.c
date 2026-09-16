@@ -3,7 +3,8 @@
  * Mirrors SDC_Comm.asm waitForIt / 256-byte $FF4A/$FF4B transfers and the
  * FileAccess commands Phase B implements (mount, dir/info/CWD, LSN R/W)
  * plus Phase C stream ($90/$91 512-byte sectors, abort $D0) as used by
- * SDC_StreamFile_Library.asm / SDC_BigLoadm.asm.
+ * SDC_StreamFile_Library.asm / SDC_BigLoadm.asm, and Phase D Play
+ * (SDC_Play.asm open/stream/interleaved 512 / $D0 / CLR $FF40).
  *
  * Compile / run (no XRoar, no SDL):
  *   ./tools/run-cocosdc-tests.sh
@@ -33,6 +34,8 @@ static int last_wait;
 static int nfail;
 static int ncheck;
 static char root_path[PATH_MAX];
+
+static void put_cmd(uint8_t *block, const char *s);
 
 static int check(int cond, const char *msg) {
 	ncheck++;
@@ -101,6 +104,88 @@ static void stream_abort(void) {
 	sdc_hw_write(&hw, 0x08, 0xd0);
 	pump();
 	last_wait = wait_for_it();
+}
+
+/* Play.asm: LDA $FF48 / ASRA / LBCC eof / BEQ wait.
+ *  0 = not busy (EOF), 1 = BUSY|READY (proceed), -1 = wait / fail. */
+static int play_asra(void) {
+	last_status = sdc_hw_read(&hw, 0x08);
+	if (last_status & SDC_FAILED) {
+		return -1;
+	}
+	if (!(last_status & SDC_BUSY)) {
+		return 0;
+	}
+	if (last_status & SDC_READY) {
+		return 1;
+	}
+	return -1;
+}
+
+/* LDU <$4A / LDD $FF4A: high from $FF4A, low from $FF4B.  pump() after each
+ * DATREG read so the last byte of a sector refills like the cart. */
+static uint16_t play_ldd_ff4a(void) {
+	uint8_t hi = sdc_hw_read(&hw, 0x0a);
+	pump();
+	uint8_t lo = sdc_hw_read(&hw, 0x0b);
+	pump();
+	return (uint16_t)(((uint16_t)hi << 8) | lo);
+}
+
+static void play_read_512_words(uint8_t *buf) {
+	int i;
+
+	for (i = 0; i < (int)(SDC_STREAM_SIZE / 2); i++) {
+		uint16_t w = play_ldd_ff4a();
+		buf[i * 2] = (uint8_t)(w >> 8);
+		buf[i * 2 + 1] = (uint8_t)w;
+	}
+	last_wait = wait_for_it();
+}
+
+/* OpenSDC_File_X_At_Start (StreamFile / Play): stay in command mode between
+ * $E0/$E1 mount and $90/$91.  Play defaults SDC_DriveNumber to 1. */
+static int open_sdc_file_x_at_start(uint8_t drive, const char *m_path) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	int i;
+
+	sdc_hw_write(&hw, 0x00, SDC_CMDMODE);
+	last_wait = wait_for_it();
+	if (last_wait < 0 || (last_status & SDC_BUSY)) {
+		leave_cmd();
+		return -1;
+	}
+	sdc_hw_write(&hw, 0x08, (uint8_t)(0xe0 + (drive & 1)));
+	pump();
+	last_wait = wait_for_it();
+	if (last_wait != 1) {
+		leave_cmd();
+		return -1;
+	}
+	put_cmd(block, m_path);
+	for (i = 0; i < (int)SDC_BLOCK_SIZE; i++) {
+		sdc_hw_write(&hw, (i & 1) ? 0x0b : 0x0a, block[i]);
+	}
+	pump();
+	last_wait = wait_for_it();
+	if (last_wait < 0 || (last_status & SDC_BUSY)) {
+		leave_cmd();
+		return -1;
+	}
+	/* 24-bit LSN 0, then $43 again, then stream (OpenSDC_File_X). */
+	sdc_hw_write(&hw, 0x09, 0);
+	sdc_hw_write(&hw, 0x0a, 0);
+	sdc_hw_write(&hw, 0x0b, 0);
+	sdc_hw_write(&hw, 0x00, SDC_CMDMODE);
+	last_wait = wait_for_it();
+	if (last_wait < 0 || (last_status & SDC_BUSY)) {
+		leave_cmd();
+		return -1;
+	}
+	sdc_hw_write(&hw, 0x08, (uint8_t)(0x90 + (drive & 1)));
+	pump();
+	last_wait = wait_for_it();
+	return last_wait;
 }
 
 /* CommSDC: A=cmd, B=param1, X=param2/3, optional 256-byte buffer. */
@@ -598,6 +683,106 @@ static void test_stream(void) {
 	(void)comm_sdc(0xe0, 0, 0, name, 1);
 }
 
+static void test_play(void) {
+	uint8_t sec[SDC_STREAM_SIZE];
+	uint8_t got[SDC_STREAM_SIZE * 4];
+	uint8_t pcm[SDC_STREAM_SIZE * 3 + 80];
+	char path[PATH_MAX];
+	size_t i;
+	size_t npcm = sizeof(pcm);
+	size_t nsec;
+	size_t ngot;
+	int asra;
+	unsigned sector;
+
+	for (i = 0; i < npcm; i++) {
+		pcm[i] = (uint8_t)(0x40 + (i & 0x3f));
+	}
+	pcm[0] = 0x11;
+	pcm[1] = 0x22;
+	pcm[511] = 0x33;
+	pcm[512] = 0x44;
+	pcm[1023] = 0x55;
+	pcm[1024] = 0x66;
+	pcm[npcm - 1] = 0x77;
+	if (snprintf(path, sizeof(path), "%s/PLAY.RAW", root_path) >= (int)sizeof(path) ||
+	    write_file(path, pcm, npcm) != 0) {
+		check(0, "write PLAY.RAW");
+		return;
+	}
+
+	/* Play defaults SDC_DriveNumber to 1: $E1 mount, $91 stream, stay in
+	 * command mode (no CommSDC $FF40=0 between mount and $90). */
+	check(open_sdc_file_x_at_start(1, "m:PLAY.RAW") == 1,
+	      "Play OpenSDC_File_X_At_Start $E1/$91 READY");
+	check(play_asra() == 1, "Play ASRA first sector BUSY|READY");
+
+	/* First 512 into buffer 1, then ASRA wait for the next sector (Play). */
+	play_read_512_words(sec);
+	check(sec[0] == 0x11 && sec[1] == 0x22 && sec[511] == 0x33,
+	      "Play first sector 16-bit $FF4A/$FF4B order");
+	check(memcmp(sec, pcm, SDC_STREAM_SIZE) == 0, "Play sector 0 matches host");
+	check(play_asra() == 1, "Play ASRA after sector 0 waits as READY (sector 1)");
+
+	memcpy(got, sec, SDC_STREAM_SIZE);
+	ngot = SDC_STREAM_SIZE;
+
+	/* Interleaved Play pacing: after ~166 dummy samples, blast-read 512
+	 * without a READY wait loop; one ASRA poll afterwards for EOF. */
+	nsec = (npcm + SDC_STREAM_SIZE - 1) / SDC_STREAM_SIZE;
+	for (sector = 1; sector < nsec; sector++) {
+		play_read_512_words(sec);
+		memcpy(got + ngot, sec, SDC_STREAM_SIZE);
+		ngot += SDC_STREAM_SIZE;
+		asra = play_asra();
+		if (sector + 1 < nsec) {
+			check(asra == 1, "Play interleaved poll still BUSY (more sectors)");
+		} else {
+			check(asra == 0, "Play interleaved poll Not Busy after last sector");
+		}
+	}
+	check(ngot >= npcm, "Play consumed at least the file length");
+	check(memcmp(got, pcm, npcm) == 0, "Play concatenated sectors match PLAY.RAW");
+	check(got[npcm] == 0 && got[ngot - 1] == 0, "Play short last sector zero-padded");
+	check(!(sdc_hw_read(&hw, 0x08) & SDC_BUSY), "Play EOF CLR path sees Not Busy");
+	leave_cmd();
+
+	/* BREAK: $D0 then CLR $FF40 (SDCBreak / SDCAudioPlayDone).  $D0 must
+	 * clear BUSY in the command write — Play does not waitForIt. */
+	check(open_sdc_file_x_at_start(1, "m:PLAY.RAW") == 1, "Play reopen for BREAK");
+	play_read_512_words(sec);
+	check(play_asra() == 1, "Play has another sector before BREAK");
+	play_read_512_words(sec);
+	sdc_hw_write(&hw, 0x08, 0xd0);
+	last_status = sdc_hw_read(&hw, 0x08);
+	check(!(last_status & (SDC_BUSY | SDC_FAILED)),
+	      "Play $D0 BREAK is Not Busy without pump");
+	leave_cmd();
+	check(!(sdc_hw_read(&hw, 0x08) & SDC_BUSY), "Play CLR $FF40 after $D0");
+
+	/* Same host file cannot occupy both slots; eject slot 1 first. */
+	{
+		uint8_t name[SDC_BLOCK_SIZE];
+		put_cmd(name, "M:");
+		check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "eject Play slot 1 before slot 0");
+	}
+
+	/* Drive 0 Play path ($E0/$90) — same contract, other slot. */
+	check(open_sdc_file_x_at_start(0, "m:PLAY.RAW") == 1, "Play $E0/$90 READY");
+	play_read_512_words(sec);
+	check(sec[0] == 0x11, "Play slot 0 first sample");
+	sdc_hw_write(&hw, 0x08, 0xd0);
+	leave_cmd();
+
+	/* Eject both slots (Play does not M: eject; FileAccess might next). */
+	{
+		uint8_t name[SDC_BLOCK_SIZE];
+		put_cmd(name, "M:");
+		check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "eject Play slot 1");
+		check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "eject Play slot 0");
+	}
+}
+
 static void test_no_root(void) {
 	uint8_t block[SDC_BLOCK_SIZE];
 	sdc_fs_free(&fs);
@@ -667,6 +852,7 @@ int main(void) {
 	test_mkdir_delete();
 	test_escape();
 	test_stream();
+	test_play();
 	test_no_root();
 
 	sdc_fs_free(&fs);
@@ -676,6 +862,6 @@ int main(void) {
 		fprintf(stderr, "%d/%d check(s) failed\n", nfail, ncheck);
 		return 1;
 	}
-	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/slots/CWD)\n", ncheck);
+	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/slots/CWD)\n", ncheck);
 	return 0;
 }
