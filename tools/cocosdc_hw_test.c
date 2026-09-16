@@ -161,7 +161,7 @@ int main(void) {
 	/* 256-byte RX: READY, then not busy after the last DATREG read. */
 	{
 		uint8_t out[SDC_BLOCK_SIZE];
-		memset(h.block, 0xa5, sizeof(h.block));
+		memset(h.block, 0xa5, SDC_BLOCK_SIZE);
 		h.block[0] = 0x11;
 		h.block[255] = 0x22;
 		sdc_hw_start_rx(&h);
@@ -179,6 +179,37 @@ int main(void) {
 		}
 	}
 
+	/* 512-byte stream sector: READY for 512 DATREG reads, then BUSY
+	 * without READY so the cart can refill (BIGLOADM / StreamFile). */
+	{
+		uint8_t out[SDC_STREAM_SIZE];
+		memset(h.block, 0x5a, SDC_STREAM_SIZE);
+		h.block[0] = 0x01;
+		h.block[1] = 0x02;
+		h.block[511] = 0xfe;
+		sdc_hw_start_stream_rx(&h);
+		if (wait_for_it(&h) != 1) {
+			nfail += fail("stream RX did not set READY");
+		}
+		for (int i = 0; i < SDC_STREAM_SIZE; i++) {
+			out[i] = sdc_hw_read(&h, (i & 1) ? 0x0b : 0x0a);
+		}
+		if (out[0] != 0x01 || out[1] != 0x02 || out[511] != 0xfe ||
+		    out[2] != 0x5a) {
+			nfail += fail("stream RX payload");
+		}
+		if (!h.cmd_ready || !h.streaming) {
+			nfail += fail("stream sector did not request refill");
+		}
+		if ((sdc_hw_read(&h, 0x08) & (BUSY | READY)) != BUSY) {
+			nfail += fail("stream sector end is BUSY without READY");
+		}
+		sdc_hw_succeed(&h);
+		if (h.streaming || (sdc_hw_read(&h, 0x08) & BUSY)) {
+			nfail += fail("stream succeed did not clear BUSY");
+		}
+	}
+
 	/* FAILED is sticky for waitForIt (bmi). */
 	sdc_hw_fail(&h, SDC_ERR_NOTFOUND);
 	if (wait_for_it(&h) >= 0 || !(sdc_hw_read(&h, 0x08) & FAILED) ||
@@ -190,6 +221,6 @@ int main(void) {
 		fprintf(stderr, "%d test(s) failed\n", nfail);
 		return 1;
 	}
-	puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET/latch/RX ok");
+		puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET/latch/RX/stream-sector ok");
 	return 0;
 }

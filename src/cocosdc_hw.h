@@ -20,6 +20,11 @@
  *  payload, fail, or offer a 256-byte response (READY, then 256 reads from
  *  $FF4A/$FF4B) — Get Info / dir page / CWD / read LSN.
  *
+ *  Stream ($90/$91, User Guide $9X) is not a CommSDC 256-byte exchange.
+ *  After the command, BUSY stays set and READY marks each 512-byte sector
+ *  on $FF4A/$FF4B until EOF (BUSY cleared) or abort ($D0).  BIGLOADM /
+ *  StreamFile poll READY for the first byte of every sector.
+ *
  *  Extra FAILED bits used by SDC_FileAccess.asm:
  *    $04 invalid path, $08 miscellaneous, $10 not found, $20 in use.
  *
@@ -43,8 +48,9 @@
 #define SDC_ERR_NOTFOUND (0x10)
 #define SDC_ERR_INUSE    (0x20)
 
-#define SDC_CMDMODE    (0x43)
-#define SDC_BLOCK_SIZE (256)
+#define SDC_CMDMODE     (0x43)
+#define SDC_BLOCK_SIZE  (256)
+#define SDC_STREAM_SIZE (512)
 
 /* BCD 1.27 — Studio's CheckSDCFirmwareVersion requires >= $0127. */
 #define SDC_FW_VERSION_BCD (0x0127)
@@ -64,9 +70,14 @@ struct sdc_hw {
 	/* LSN / extra params are sampled when the command is written.
 	 * CommSDC then reuses $FF4A/$FF4B as the 256-byte data port. */
 	uint8_t latched_preg[3];
-	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t block[SDC_STREAM_SIZE];
 	unsigned xfer_index;
+	unsigned xfer_limit; /* SDC_BLOCK_SIZE or SDC_STREAM_SIZE */
 	unsigned xfer;  /* enum sdc_xfer */
+	/* Stream ($90/$91): keep BUSY across 512-byte sectors; after each
+	 * sector cmd_ready asks the cart to refill or finish (EOF). */
+	bool streaming;
+	bool stream_8bit; /* $9X bit 1: 8-bit via $FF4B only */
 	/* Set when a command finishes (BUSY cleared).  The cart logs then
 	 * clears this. */
 	bool completed;
@@ -98,6 +109,8 @@ static inline int sdc_hw_reg(uint16_t A) {
 static inline void sdc_hw_succeed(struct sdc_hw *h) {
 	h->xfer = SDC_XFER_NONE;
 	h->xfer_index = 0;
+	h->xfer_limit = 0;
+	h->streaming = false;
 	h->status = 0;
 	h->cmd_ready = false;
 	h->completed = true;
@@ -106,18 +119,54 @@ static inline void sdc_hw_succeed(struct sdc_hw *h) {
 static inline void sdc_hw_fail(struct sdc_hw *h, uint8_t bits) {
 	h->xfer = SDC_XFER_NONE;
 	h->xfer_index = 0;
+	h->xfer_limit = 0;
+	h->streaming = false;
 	h->status = (uint8_t)(SDC_FAILED | bits);
 	h->cmd_ready = false;
 	h->completed = true;
 }
 
-/* Present h->block as a 256-byte response.  CommSDC waits for READY. */
-static inline void sdc_hw_start_rx(struct sdc_hw *h) {
+static inline void sdc_hw_start_rx_n(struct sdc_hw *h, unsigned n, int streaming) {
 	h->xfer = SDC_XFER_RX;
 	h->xfer_index = 0;
+	h->xfer_limit = n;
+	h->streaming = streaming ? true : false;
 	h->status = (uint8_t)(SDC_BUSY | SDC_READY);
 	h->cmd_ready = false;
 	h->completed = false;
+}
+
+/* Present h->block as a 256-byte response.  CommSDC waits for READY. */
+static inline void sdc_hw_start_rx(struct sdc_hw *h) {
+	sdc_hw_start_rx_n(h, SDC_BLOCK_SIZE, 0);
+}
+
+/* 512-byte stream sector.  BUSY stays set after the sector so the cart can
+ * refill (READY again) or clear BUSY at EOF. */
+static inline void sdc_hw_start_stream_rx(struct sdc_hw *h) {
+	sdc_hw_start_rx_n(h, SDC_STREAM_SIZE, 1);
+}
+
+static inline uint8_t sdc_hw_take_rx(struct sdc_hw *h) {
+	uint8_t v;
+
+	if (h->xfer != SDC_XFER_RX || h->xfer_index >= h->xfer_limit) {
+		return 0;
+	}
+	v = h->block[h->xfer_index++];
+	if (h->xfer_index >= h->xfer_limit) {
+		if (h->streaming) {
+			/* Drop READY between sectors; keep BUSY.  cmd_ready
+			 * asks sdc_fs_execute to refill or finish. */
+			h->xfer = SDC_XFER_NONE;
+			h->status = SDC_BUSY;
+			h->cmd_ready = true;
+			h->completed = false;
+		} else {
+			sdc_hw_succeed(h);
+		}
+	}
+	return v;
 }
 
 /* VERSION and the $1C program-mode handshake have no payload and no
@@ -153,6 +202,9 @@ static inline void sdc_hw_start_command(struct sdc_hw *h, uint8_t cmd) {
 	h->completed = false;
 	h->cmd_ready = false;
 	h->xfer_index = 0;
+	h->xfer_limit = 0;
+	h->streaming = false;
+	h->stream_8bit = false;
 	h->latched_preg[0] = h->preg[0];
 	h->latched_preg[1] = h->preg[1];
 	h->latched_preg[2] = h->preg[2];
@@ -179,22 +231,16 @@ static inline uint8_t sdc_hw_read(struct sdc_hw *h, int reg) {
 	case 0x09:
 		return h->preg[0];
 	case 0x0a:
-		if (h->xfer == SDC_XFER_RX && h->xfer_index < SDC_BLOCK_SIZE) {
-			uint8_t v = h->block[h->xfer_index++];
+		if (h->xfer == SDC_XFER_RX && !h->stream_8bit) {
+			uint8_t v = sdc_hw_take_rx(h);
 			h->preg[1] = v;
-			if (h->xfer_index >= SDC_BLOCK_SIZE) {
-				sdc_hw_succeed(h);
-			}
 			return v;
 		}
 		return h->preg[1];
 	case 0x0b:
-		if (h->xfer == SDC_XFER_RX && h->xfer_index < SDC_BLOCK_SIZE) {
-			uint8_t v = h->block[h->xfer_index++];
+		if (h->xfer == SDC_XFER_RX) {
+			uint8_t v = sdc_hw_take_rx(h);
 			h->preg[2] = v;
-			if (h->xfer_index >= SDC_BLOCK_SIZE) {
-				sdc_hw_succeed(h);
-			}
 			return v;
 		}
 		return h->preg[2];
@@ -214,11 +260,13 @@ static inline void sdc_hw_write(struct sdc_hw *h, int reg, uint8_t D) {
 			}
 		} else {
 			/* Leaving command mode aborts an in-flight transfer
-			 * but keeps param registers (VERSION is read after
-			 * CommSDC clears $FF40). */
+			 * (including stream) but keeps param registers
+			 * (VERSION is read after CommSDC clears $FF40). */
 			h->cmd_mode = false;
 			h->xfer = SDC_XFER_NONE;
 			h->xfer_index = 0;
+			h->xfer_limit = 0;
+			h->streaming = false;
 			h->cmd_ready = false;
 			h->status = 0;
 		}
