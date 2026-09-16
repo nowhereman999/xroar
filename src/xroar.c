@@ -3523,7 +3523,6 @@ static void helptext(void) {
 "  -load-fdX FILE        insert disk image FILE into floppy drive X (0-3)\n"
 "  -load-hdX FILE        use hard disk image FILE as drive X (0-1, e.g. for ide)\n"
 "  -load-sd FILE         use SD card image FILE (e.g. for mooh, nx32)\n"
-"  -sdc-root DIR         host directory mapped as CoCoSDC SD card root\n"
 "  -load-tape FILE       attach FILE as tape image for reading\n"
 "  -tape-write FILE      open FILE for tape writing\n"
 "  -load-text FILE       type FILE into BASIC\n"
