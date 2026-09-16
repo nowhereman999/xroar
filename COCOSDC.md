@@ -1,4 +1,4 @@
-# CoCoSDC in this XRoar fork (Phase C)
+# CoCoSDC in this XRoar fork (Phase D)
 
 This fork adds a Dragon/CoCo cartridge type `cocosdc` so Studio’s CoCoSDC
 client libraries can talk to a host folder on a Mac (or any Unix host)
@@ -7,14 +7,17 @@ without a physical CoCoSDC.
 It is **not** a VCC `SDC.dll` port.  The register contract is the one used by
 Studio’s `CommSDC` (`SDC_Comm.asm`): `$FF40` control latch, `$FF48`
 command/status, `$FF49–$FF4B` parameter/data path.  Mount, directory, and
-buffered 256-byte R/W follow `SDC_FileAccess.asm`.  Stream / BIGLOADM follow
-`SDC_StreamFile_Library.asm` and `SDC_BigLoadm.asm` (512-byte `$90`/`$91`
-sectors, abort `$D0`).  Firmware opcodes and record layouts match Darren
-Atkinson’s CoCo SDC User Guide where the client uses them.
+buffered 256-byte R/W follow `SDC_FileAccess.asm`.  Stream / BIGLOADM /
+Play follow `SDC_StreamFile_Library.asm`, `SDC_BigLoadm.asm`, and
+`SDC_Play.asm` (512-byte `$90`/`$91` sectors, abort `$D0`).  Firmware
+opcodes and record layouts match Darren Atkinson’s CoCo SDC User Guide
+where the client uses them.
 
 Phase A was register plumbing only (VERSION, reset handshake, bit-5 command
 *ack*).  Phase B maps FileAccess commands onto `-sdc-root`.  Phase C adds
-the 512-byte stream path those loaders use.
+the 512-byte stream path those loaders use.  Phase D is Play’s
+open/stream/abort contract against that stream (not DAC audio, not Studio
+Run).
 
 ## Enable the cartridge
 
@@ -80,7 +83,7 @@ src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2
 
 `-v 2` logs VERSION, mount, dir, LSN, and stream commands.
 
-## What Phase C implements
+## What Phase D implements
 
 Hardware, as used by `CommSDC`:
 
@@ -108,11 +111,21 @@ Command-mode behaviour:
   on `$FF4A`/`$FF4B` until EOF (`BUSY` cleared) or abort (`$D0` or
   `$FF40=0`).  BIGLOADM / StreamFile poll `READY` for the first byte of
   every sector (`ASRA` / `POLLREADY`).
-- Other commands clear `BUSY` with no payload (VERSION, `$1C`, …).
+- Play (`SDC_Play.asm`) uses the same stream via `OpenSDC_File_X_At_Start`
+  (stays in command mode between `$E1`/`$E0` mount and `$91`/`$90`;
+  default drive 1).  After the first two READY waits it blast-reads the
+  next 512 bytes with 16-bit `LDU`/`LDX $FF4A` while the previous buffer
+  is clocked to `$FF20` — it does **not** loop on READY before those
+  interleaved loads.  The last DATREG read of a sector must already have
+  presented the next sector (or cleared BUSY at EOF).  BREAK writes `$D0`
+  to `$FF48` and does not poll BUSY; exit does `CLR $FF40`.
+- `$D0` completes in the `$FF48` write (BUSY already clear).  Other
+  commands without a payload clear `BUSY` when they finish (VERSION,
+  `$1C`, …).
 
 ### CommSDC ops
 
-| Client use | Command | Phase C |
+| Client use | Command | Phase D |
 | --- | --- | --- |
 | Enter/leave command mode, poll status | `$FF40` / `$FF48` | **Implemented** |
 | `CheckSDCFirmwareVersion` (`$C0`, `'V'`) | `$C0` + P1=`$56` | **Implemented** — BCD **1.27** (`$0127`) in `$FF4A/$FF4B` |
@@ -125,10 +138,11 @@ Command-mode behaviour:
 | Directory page | `$C0` + `'>'` | **Implemented** — 16×16-byte records (size **MSB first** at 12–15).  First `L:pattern` (`$E0`) |
 | Current directory | `$C0` + `'C'` | **Implemented** — leaf 8.3 name.  Volume root sets bits 4+7 (`FAILED\|$10`) as in the User Guide |
 | Set CWD / mkdir / delete | `$E0` `D:` / `K:` / `X:` | **Implemented** (used by FileAccess; leaf only for `K:`) |
-| Stream (`OpenSDC_File_X` / BIGLOADM) | `$90/$91` | **Implemented** — 512-byte sectors from LSN×512; `BUSY\|READY` per sector; last short sector zero-padded; EOF clears `BUSY` |
-| Abort stream | `$D0` or `$FF40=0` | **Implemented** — Not Busy; StreamTest BREAK key writes `$D0` |
-| Play / remaining guide commands | | **Out of scope** (Phase D) |
-| Floppy-emulation mode (non-`$43` latch) | | **Not emulated** (latch stored; `$FF48` reads 0) |
+| Stream (`OpenSDC_File_X` / BIGLOADM / Play) | `$90/$91` | **Implemented** — 512-byte sectors from LSN×512; `BUSY\|READY` per sector; last short sector zero-padded; EOF clears `BUSY`; next sector presented on the last DATREG read (Play interleaved load) |
+| Abort stream | `$D0` or `$FF40=0` | **Implemented** — `$D0` is Not Busy in the `$FF48` write (Play BREAK); `CLR $FF40` also aborts |
+| Play DAC / analog mux (`$FF20`) | | **Not in host tests** — register/stream contract only; 44750 Hz playback needs a live emulator |
+| CSM media-player menu / extra opcodes | | **Not used by Studio Play/FileAccess** (`.CSM` is a file format that also streams with `$90`) |
+| Floppy-emulation mode (non-`$43` latch) | | **Not emulated** — Play/FileAccess only write `$00` to leave command mode; latch is stored, `$FF48` reads 0 |
 
 Files mounted with `m:` / `n:` are a raw array of 256-byte blocks (the
 FileAccess model).  `M:` / `N:` mount the same way for LSN access (no JVC /
@@ -140,29 +154,41 @@ cleanly — CommSDC does not hang.
 
 Stream is a separate transfer from CommSDC’s 256-byte `$FF4A/$FF4B` loop.
 `OpenSDC_File_X_At_Start` mounts with `$E0/$E1`, writes a 24-bit LSN, then
-issues `$90/$91` and polls `READY`.  Each sector is 512 bytes (the SD card
-native size).  `BUSY` remains set until the last sector has been read or
-`$D0` / `$FF40=0` aborts.  Unmounted / LSN-past-EOF `$90` sets `FAILED`
-(waitForIt / `bmi`); StreamFile’s `POLLREADY` assumes the mount succeeded.
+issues `$90/$91` and polls `READY` — **without** leaving command mode
+between mount and stream (unlike CommSDC, which clears `$FF40` after every
+call).  Each sector is 512 bytes (the SD card native size).  `BUSY` remains
+set until the last sector has been read or `$D0` / `$FF40=0` aborts.
+Unmounted / LSN-past-EOF `$90` sets `FAILED` (waitForIt / `bmi`);
+StreamFile’s `POLLREADY` assumes the mount succeeded.
 
-## Phase C vs later (Play / floppy latch)
+`SDC_LoadmSavem.asm` uses FileAccess byte I/O (`$80`/`$A0`), not stream —
+that path was Phase B.
 
-**Phase C is done** when the host tests below pass.  That includes Phase B
-FileAccess plus an end-to-end stream of a file under a temp `sdc-root`
-through the register engine (the BIGLOADM / StreamFile pacing).  Verifiable
-on Linux CI without a Mac, a CoCo, or an emulator binary.
+## Phase D vs later (Studio Run / Mac Play smoke)
 
-| In Phase C (this branch) | Not in Phase C — later (Phase D) |
+**Phase D is done** when the host tests below pass.  That includes Phases
+A–C plus Play’s open/stream/abort against a mounted file under a temp
+`sdc-root` (16-bit `$FF4A` words, interleaved 512-byte loads, `$D0` BREAK
+without a BUSY poll, `CLR $FF40`).  Verifiable on Linux CI without a Mac,
+a CoCo, or an emulator binary.
+
+Full 44750 Hz Play audio cannot be proven here: `SDC_Play.asm` clocks
+samples to the CoCo DAC (`$FF20`) with cycle-counted delays.  Host tests
+check the register/stream contract only.
+
+| In Phase D (this branch) | Still not done |
 | --- | --- |
-| `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | Floppy-emulation latch (non-`$43` `$FF40`) |
-| VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | Play / CSM media-player commands |
-| Mount/eject `$E0/$E1` `m:`/`n:`/`M:` against `-sdc-root` | Studio **Run** media integration |
-| LSN `$80/$81` `$A0/$A1` (256 bytes at LSN×256) | JVC/VDK/SDF header parse; FDC floppy image geometry |
-| Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Mount-next / disk-set (`+` / `#`) |
-| `$90/$91` 512-byte **stream** from LSN×512, `$D0` abort | Remaining User Guide extras not used by the Studio libraries |
+| `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | Floppy-emulation latch (WD-style non-`$43` `$FF40`) — **not required** by Studio Play/FileAccess (they only `CLR $FF40` to leave command mode) |
+| VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | Studio **Run** media integration (wire CoCo BASIC Studio to XRoar) |
+| Mount/eject `$E0/$E1` `m:`/`n:`/`M:` against `-sdc-root` | JVC/VDK/SDF header parse; FDC floppy image geometry |
+| LSN `$80/$81` `$A0/$A1` (256 bytes at LSN×256) | Mount-next / disk-set (`+` / `#`) |
+| Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Remaining User Guide extras not used by the Studio libraries |
+| `$90/$91` 512-byte **stream** from LSN×512; Play interleaved refill; `$D0` abort-on-write | Audible Play through the emulator sound path (Mac smoke with `SDC_Play.asm`) |
+| | Zippster `.CSM` media-player menu (not a Studio library opcode) |
 
 `$9X` bit 1 (8-bit transfers via `$FF4B` only, `$92`/`$93`) is decoded.
-Studio BIGLOADM / StreamFile use 16-bit `$90`/`$91` (`LDD $FF4A`).
+Studio BIGLOADM / StreamFile / Play use 16-bit `$90`/`$91` (`LDD` /
+`LDU`/`LDX $FF4A`).
 
 An upstream PR to Ciaran is intentionally not part of this work.
 
@@ -175,10 +201,11 @@ No SDL, autotools, ROMs, or CoCo required:
 ```
 
 That compiles `tools/cocosdc_hw_test.c` (wait-loop, LSN latch, 256-byte RX,
-512-byte stream-sector READY/BUSY) and `tools/cocosdc_fs_test.c` +
-`src/cocosdc_fs.c` against a `mkdtemp` sdc-root (mount, missing-path
-`FAILED|$10`, both slots, in-use, dir pages, CWD, sequential LSN
-write/read, mkdir/delete, `$90/$91` multi-sector stream, `$D0` abort).
+512-byte stream-sector READY/BUSY, Play `$D0` abort-on-write) and
+`tools/cocosdc_fs_test.c` + `src/cocosdc_fs.c` against a `mkdtemp` sdc-root
+(mount, missing-path `FAILED|$10`, both slots, in-use, dir pages, CWD,
+sequential LSN write/read, mkdir/delete, `$90/$91` multi-sector stream,
+`$D0` abort, Play `OpenSDC_File_X` + interleaved 512-byte words).
 
 After `./configure`, the same programs are `make -C src check` (`TESTS`).
 GitHub Actions workflow `.github/workflows/cocosdc-host.yml` runs the
@@ -242,9 +269,9 @@ Host-side tests (same as CI; no emulator):
 gets the usual XRoar menu extras.  This fork does not add a CMake path;
 configure/make is what the tree already uses.
 
-### Optional Mac / CoCo smoke (not required for Phase C)
+### Optional Mac / CoCo smoke (not required for Phase D)
 
-Phase C acceptance is the Linux host tests.  When a Mac and CoCo program
+Phase D acceptance is the Linux host tests.  When a Mac and CoCo program
 are available later:
 
 1. `mkdir -p ~/sdc-root` and put a small file there, e.g. `HELLO.TXT`.
@@ -259,5 +286,12 @@ are available later:
    - `$E0` `"L:*.*"` then `$C0`+`'>'` returns a directory page (does not hang).
    - StreamFile / BIGLOADM: `m:` mount then `$90` — 512-byte sectors with
      READY between them; `$D0` or `$FF40=0` aborts without hanging.
+   - Play (`SDC_Play.asm`): `m:` + `OpenSDC_File_X_At_Start` on a raw PCM
+     file under `-sdc-root` (ffmpeg u8 44750 Hz as in the Play comments);
+     BREAK should abort (`$D0`); end of file should return without hang.
+     **Audible** 44750 Hz output through `$FF20` is this Mac smoke — host
+     tests do not exercise the emulator sound path.
 
-Do not expect Play/CSM or floppy-latch behaviour on this branch.
+Studio **Run** (launching media from CoCo BASIC Studio into this XRoar)
+is still later work.  Do not expect floppy-latch FDC behaviour or a
+Zippster `.CSM` menu on this branch.
