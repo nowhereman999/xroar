@@ -1,14 +1,18 @@
-# CoCoSDC in this XRoar fork (Phase A)
+# CoCoSDC in this XRoar fork (Phase B)
 
-This fork adds a Dragon/CoCo cartridge type `cocosdc` so Studio’s CoCoSDC Run
-media can be exercised on a Mac (or any Unix host) without a physical CoCoSDC.
+This fork adds a Dragon/CoCo cartridge type `cocosdc` so Studio’s CoCoSDC
+client libraries can talk to a host folder on a Mac (or any Unix host)
+without a physical CoCoSDC.
 
 It is **not** a VCC `SDC.dll` port.  The register contract is the one used by
-Studio’s client libraries (`CommSDC` in `SDC_Comm.asm`): `$FF40` control latch,
-`$FF48` command/status, `$FF49–$FF4B` parameter/data path.
+Studio’s `CommSDC` (`SDC_Comm.asm`): `$FF40` control latch, `$FF48`
+command/status, `$FF49–$FF4B` parameter/data path.  Mount, directory, and
+buffered 256-byte R/W follow `SDC_FileAccess.asm`.  Firmware opcodes and
+256-byte record layouts match Darren Atkinson’s CoCo SDC User Guide where
+the client uses them.
 
-Phase A is the plumbing only.  Mount, directory, file, BIGLOADM, and stream/Play
-are later phases.
+Phase A was register plumbing only (VERSION, reset handshake, bit-5 command
+*ack*).  Phase B maps those commands onto `-sdc-root`.
 
 ## Enable the cartridge
 
@@ -39,9 +43,9 @@ MPI: insert the profile into a slot as with any other cart
 (`-cart mpi -mpi-load-cart cocosdc`).  SCS (`$FF40–$FF5F`) follows the MPI
 P2 routing like RS-DOS.
 
-An optional `-cart-rom` can still be attached (SDC-DOS flash image).  Phase A
-does not require a cart ROM; load your CoCo program some other way (`-run`,
-cassette, floppy, etc.).
+An optional `-cart-rom` can still be attached (SDC-DOS flash image).  It is
+not required; load your CoCo program some other way (`-run`, cassette,
+floppy, etc.).
 
 Confirm the type is registered:
 
@@ -52,7 +56,29 @@ xroar -cart help
 
 You should see `cocosdc`.
 
-## What Phase A implements
+## Example `-sdc-root` layout
+
+Treat the directory as the SD volume root.  Names are matched
+case-insensitively (8.3-style).  Relative paths use the SDC current
+directory (`D:` / `'C'`).  A leading `/` is absolute from the volume root.
+
+```text
+~/sdc-root/
+  HELLO.TXT          raw file for m: / n: (LSN N = byte offset N*256)
+  NEWFILE.BIN
+  GAMES/
+    FOO.BIN
+```
+
+```text
+mkdir -p ~/sdc-root/GAMES
+printf 'hello from sdc\n' > ~/sdc-root/HELLO.TXT
+src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2
+```
+
+`-v 2` logs VERSION, mount, dir, and LSN commands.
+
+## What Phase B implements
 
 Hardware, as used by `CommSDC`:
 
@@ -61,38 +87,47 @@ Hardware, as used by `CommSDC`:
 | `$FF40` write | `$43` enters command mode; `$00` leaves it (params are kept) |
 | `$FF48` read | Status: `BUSY` bit 0, `READY` bit 1, `FAILED` bit 7 |
 | `$FF48` write | Command (command mode only) |
-| `$FF49` | Parameter 1 |
+| `$FF49` | Parameter 1 (LSN high / subcommand).  Latched when the command is written — `$FF4A/$FF4B` are then the 256-byte data port. |
 | `$FF4A` | Parameter 2 / data A |
 | `$FF4B` | Parameter 3 / data B |
+
+`FAILED` extra bits (as tested by `SDCError` in `SDC_FileAccess.asm`):
+`$04` invalid path, `$08` miscellaneous, `$10` not found, `$20` in use.
 
 Command-mode behaviour:
 
 - After `$43`, status is not busy so `waitForIt` / `POLLBUSY` return.
-- Commands with **bit 5 set** (`$E0/$E1` mount, `$A0/$A1` write LSN, …) set
-  `BUSY|READY`, accept 256 bytes on `$FF4A/$FF4B`, then clear `BUSY`.
-- Other commands clear `BUSY` immediately (no 256-byte response in Phase A).
+- Commands with **bit 5 set** (`$E0/$E1`, `$A0/$A1`, …) set `BUSY|READY`,
+  accept 256 bytes on `$FF4A/$FF4B`, then succeed (not busy) or `FAILED`.
+- Commands that return a block (`$C0` `'I'`/`'>'`/`'C'`, `$80/$81`) set
+  `BUSY|READY` so CommSDC reads 256 bytes; then not busy.
+- Other commands clear `BUSY` with no payload (VERSION, `$1C`, …).
 
-Host directory:
+### CommSDC ops
 
-- Stored as the SD card root (`-sdc-root` / `sdc-root=`).
-- Existence is checked and logged; **files are not opened in Phase A**.
-
-### CommSDC ops: implemented vs stubbed
-
-| Client use | Command | Phase A |
+| Client use | Command | Phase B |
 | --- | --- | --- |
 | Enter/leave command mode, poll status | `$FF40` / `$FF48` | **Implemented** |
-| `CheckSDCFirmwareVersion` (`$C0`, `'V'`) | `$C0` + P1=`$56` | **Implemented** — BCD **1.27** (`$0127`) left in `$FF4A/$FF4B` so the Studio check (`>= 127`) passes.  Stream/`m:` is still not emulated. |
+| `CheckSDCFirmwareVersion` (`$C0`, `'V'`) | `$C0` + P1=`$56` | **Implemented** — BCD **1.27** (`$0127`) in `$FF4A/$FF4B` |
 | `SDCReset` program-mode handshake | `$1C` | **Implemented** — `'P'/'M'` in `$FF49/$FF4A` |
-| Mount / eject (`$E0/$E1`, data block) | `$E0/$E1` | **Ack only** — 256-byte path is accepted so CommSDC does not hang; no file is mounted |
-| Write logical block | `$A0/$A1` | **Ack only** — 256-byte block is accepted, not written |
-| Read logical block | `$80/$81` | **Stub** — completes Not Busy (no 256-byte payload) |
-| Get info / dir page / CWD (`$C0` + `'I'`, `'>'`, `'C'`) | `$C0/$C1` | **Stub** — Not Busy, no data block |
+| Mount raw file / eject | `$E0/$E1` `m:` / `M:` | **Implemented** — 256-byte `"m:path"` / `"M:"`; missing path → `FAILED\|$10` |
+| Create+mount raw file | `$E0/$E1` `n:` / `N:` | **Implemented** — creates if missing; `N:` with B=X=0 pre-sizes a 630-sector DSK |
+| Write logical block | `$A0/$A1` | **Implemented** — 256 bytes at LSN×256 in the mounted file |
+| Read logical block | `$80/$81` | **Implemented** — 256-byte payload; last partial sector is zero-padded |
+| Get info for mounted file | `$C0/$C1` + `'I'` | **Implemented** — 32-byte directory record (size **LSB first** at 28–31) |
+| Directory page | `$C0` + `'>'` | **Implemented** — 16×16-byte records (size **MSB first** at 12–15).  First `L:pattern` (`$E0`) |
+| Current directory | `$C0` + `'C'` | **Implemented** — leaf 8.3 name.  Volume root sets bits 4+7 (`FAILED\|$10`) as in the User Guide |
+| Set CWD / mkdir / delete | `$E0` `D:` / `K:` / `X:` | **Implemented** (used by FileAccess; leaf only for `K:`) |
 | Stream (`$90/$91`), abort (`$D0`), Play / BIGLOADM | | **Out of scope** |
 | Floppy-emulation mode (non-`$43` latch) | | **Not emulated** (latch stored; `$FF48` reads 0) |
 
-A minimal CoCo program that follows `CommSDC` (put `$43` in `$FF40`, wait for
-not-busy, issue `$C0`/`'V'`, clear `$FF40`) will complete without hanging.
+Files mounted with `m:` / `n:` are a raw array of 256-byte blocks (the
+FileAccess model).  `M:` / `N:` mount the same way for LSN access (no JVC /
+VDK / SDF header parse in this phase).  Two slots (`$E0` / `$E1`); the same
+host file cannot be mounted in both (`FAILED\|$20`).
+
+A missing `-sdc-root`, or a path that does not exist, fails the command
+cleanly — CommSDC does not hang.
 
 ## macOS build
 
@@ -138,25 +173,45 @@ upstream XRoar.  On a Mac:
 
    ```text
    mkdir -p ~/sdc-root
+   printf 'hello from sdc\n' > ~/sdc-root/HELLO.TXT
    src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2
    ```
 
-   `-v 2` logs VERSION/mount acks.  `-cart-type help` and `-h` mention
-   `-sdc-root` without needing a ROM.
-
-`./configure --help` lists UI/audio backends.  If SDL 2 is found, the Mac build
-gets the usual XRoar menu extras.  This fork does not add a CMake path;
-configure/make is what the tree already uses.
-
-The CommSDC wait-loop against the register engine (no emulator needed):
+Host-side CommSDC wait-loop (no emulator):
 
 ```text
 cc -std=c11 -Wall -Werror -Isrc -o /tmp/cocosdc_hw_test tools/cocosdc_hw_test.c
 /tmp/cocosdc_hw_test
 ```
 
+Host-side mount / dir / 256-byte R/W against a temp folder:
+
+```text
+cc -std=c11 -Wall -Werror -I. -Isrc -o /tmp/cocosdc_fs_test \
+    tools/cocosdc_fs_test.c src/cocosdc_fs.c
+/tmp/cocosdc_fs_test
+```
+
+`./configure --help` lists UI/audio backends.  If SDL 2 is found, the Mac build
+gets the usual XRoar menu extras.  This fork does not add a CMake path;
+configure/make is what the tree already uses.
+
+### Mac test recipe (Phase B)
+
+1. `mkdir -p ~/sdc-root` and put a small file there, e.g. `HELLO.TXT`.
+2. Rebuild with `make -C src` (Texinfo / `makeinfo` not required).
+3. Run `src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2`.
+4. Confirm `[part:cocosdc]` and `SD card root:` in the log.
+5. If you have a minimal CommSDC probe (or Studio FileAccess):
+   - `SDCOpenFile` / `$E0` with `"m:HELLO.TXT"` (256-byte name block), then
+     `$80` LSN 0 — should return the file’s first 256 bytes (zero-padded).
+   - Missing name → `FAILED` with bit `$10` (file not found), no hang.
+   - `$C0`+`'I'` after a successful mount returns the 8.3 name and size.
+   - `$E0` `"L:*.*"` then `$C0`+`'>'` returns a directory page (does not hang).
+
 ## Later phases (not in this branch)
 
-- **Phase B** — mount, directory, buffered 256-byte R/W against the host folder
-- **Later** — BIGLOADM / 512-byte stream / Play
+- BIGLOADM / `$90/$91` 512-byte stream / Play
+- Floppy-emulation latch mode
+- Studio Run media integration
 - Upstream PR to Ciaran is intentionally not part of this work
