@@ -1,0 +1,16 @@
+name: CoCoSDC host tests
+
+# Linux CI for Phase B: register engine + real files under a temp sdc-root.
+# Does not build XRoar or need SDL / ROMs / a CoCo.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: CommSDC wait-loop and temp sdc-root I/O
+        run: ./tools/run-cocosdc-tests.sh

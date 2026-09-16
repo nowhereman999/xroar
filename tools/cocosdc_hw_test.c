@@ -142,10 +142,54 @@ int main(void) {
 		nfail += fail("address decode");
 	}
 
+	/* LSN is latched at command write; $FF4A/$FF4B then carry the data block. */
+	{
+		uint8_t fill[SDC_BLOCK_SIZE];
+		memset(fill, 0x3c, sizeof(fill));
+		if (comm_sdc(&h, 0xa0, 0x00, 0x0102, fill, 1) != 0) {
+			nfail += fail("write-LSN latch transfer hung");
+		}
+		if (h.latched_preg[0] != 0x00 || h.latched_preg[1] != 0x01 ||
+		    h.latched_preg[2] != 0x02) {
+			nfail += fail("LSN not latched across 256-byte data port");
+		}
+		if (h.preg[1] == 0x01 && h.preg[2] == 0x02) {
+			nfail += fail("data port should overwrite preg 2/3");
+		}
+	}
+
+	/* 256-byte RX: READY, then not busy after the last DATREG read. */
+	{
+		uint8_t out[SDC_BLOCK_SIZE];
+		memset(h.block, 0xa5, sizeof(h.block));
+		h.block[0] = 0x11;
+		h.block[255] = 0x22;
+		sdc_hw_start_rx(&h);
+		if (wait_for_it(&h) != 1) {
+			nfail += fail("RX did not set READY");
+		}
+		for (int i = 0; i < SDC_BLOCK_SIZE; i++) {
+			out[i] = sdc_hw_read(&h, (i & 1) ? 0x0b : 0x0a);
+		}
+		if (out[0] != 0x11 || out[255] != 0x22 || out[1] != 0xa5) {
+			nfail += fail("RX payload");
+		}
+		if (sdc_hw_read(&h, 0x08) & BUSY) {
+			nfail += fail("RX left BUSY set");
+		}
+	}
+
+	/* FAILED is sticky for waitForIt (bmi). */
+	sdc_hw_fail(&h, SDC_ERR_NOTFOUND);
+	if (wait_for_it(&h) >= 0 || !(sdc_hw_read(&h, 0x08) & FAILED) ||
+	    !(sdc_hw_read(&h, 0x08) & SDC_ERR_NOTFOUND)) {
+		nfail += fail("FAILED|$10 waitForIt");
+	}
+
 	if (nfail) {
 		fprintf(stderr, "%d test(s) failed\n", nfail);
 		return 1;
 	}
-	puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET ok");
+	puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET/latch/RX ok");
 	return 0;
 }

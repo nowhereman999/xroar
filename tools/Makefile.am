@@ -15,6 +15,7 @@ font2c_SOURCES = font2c.c
 EXTRA_DIST += \
 	cocosdc_hw_test.c \
 	cocosdc_fs_test.c \
+	run-cocosdc-tests.sh \
 	hkbd_lang_tables.pl \
 	html2man.pl \
 	keycodes/macintosh \
