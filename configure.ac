@@ -118,6 +118,19 @@ AC_ARG_WITH([cocoa],
 	AS_HELP_STRING([--without-cocoa], [don't test for Mac OS X Cocoa]) )
 test "x$with_sdl2" = "xno" && with_cocoa=no
 
+### macOS defaults
+#
+# GTK+ 3 is untested on Mac OS X+ (upstream README) and typically opens a
+# pure white/blank window.  Skip it unless the user asked (--with-gtk3).
+# Video then comes from SDL3's `-ui sdl`, or SDL2+Cocoa (`-ui macosx`).
+# There is no UI module named `sdl2`.
+case "$host_os" in
+darwin*)
+	test -z "$with_gtk3" && with_gtk3=no
+	test -z "$with_gtk2" && with_gtk2=no
+	;;
+esac
+
 AC_ARG_ENABLE([filereq_cli],
 	AS_HELP_STRING([--enable-filereq-cli], [include command-line file requester]) )
 
@@ -847,6 +860,11 @@ AM_COND_IF([GDB], [AC_DEFINE([WANT_GDB_TARGET], 1, [GDB target])])
 
 ### Misc tests & features
 
+# Basic SDL UI (`-ui sdl`, description "SDL3 UI" or "SDL2 UI").
+# SDL3 sets this automatically.  SDL2 on macOS usually finds Cocoa first,
+# which *disables* WANT_UI_SDL unless the user passed --enable-ui-sdl —
+# so config.h can have HAVE_SDL2 without WANT_UI_SDL.  That build's GUI is
+# `-ui macosx`, not `-ui sdl` / `-ui sdl2` (there is no sdl2 module).
 AM_COND_IF([UI_SDL2], [ test "x$enable_ui_sdl" != "xno" && enable_ui_sdl=yes ])
 AM_COND_IF([UI_SDL3], [ test "x$enable_ui_sdl" != "xno" && enable_ui_sdl=yes ])
 AM_CONDITIONAL([WANT_UI_SDL], [test "x$enable_ui_sdl" = "xyes"])

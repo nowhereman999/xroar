@@ -214,50 +214,85 @@ script on push.
 ## macOS build
 
 Linux CI cannot produce a Mac `.app`.  The tree is still autotools, same as
-upstream XRoar.  On a Mac:
+upstream XRoar.
 
-1. Install toolchain and SDL 2 (menus/audio; GTK 3 is untested on macOS):
+**A pure white/blank window is GTK+ 3 on Mac.**  GTK is untested on macOS
+(upstream README).  Do not use `-ui gtk3`.  There is **no** `-ui sdl2`
+module: that name prints `UI module sdl2 not found: trying gtk3` and
+stays white.  Working video is the **SDL3 UI**, module name `sdl`.
 
-   ```text
-   xcode-select --install
-   brew install autoconf automake pkg-config sdl2 libpng
-   ```
+### Homebrew + configure (SDL3 UI)
 
-   Texinfo is **not** needed for the emulator.
+```text
+xcode-select --install
+brew install autoconf automake pkg-config sdl3 libpng
+```
 
-2. From a git checkout, build `src/xroar` (preferred; skips the manual):
+Texinfo is **not** needed for the emulator.  Do not install `gtk+3` for
+this (if Homebrew already has it, this fork skips GTK on Darwin unless
+you pass `--with-gtk3`).
 
-   ```text
-   ./autogen.sh
-   ./configure
-   make -C src
-   ```
+```text
+./autogen.sh
+./configure --without-gtk3
+make -C src
+```
 
-   The emulator binary is `src/xroar`.  Optional: `sudo make install` (default
-   prefix `/usr/local`).
+`--without-gtk3` is the flag that avoids the white window.  SDL3 is
+found via `pkg-config sdl3`.  That sets `HAVE_SDL3` and **`WANT_UI_SDL`**
+in `config.h`, which compiles the `sdl` UI.
 
-   A top-level `make` also tries to build `doc/xroar.info`.  macOS does
-   not ship `makeinfo`, so that can fail with `makeinfo: command not
-   found` / Error 127.  That does **not** mean cocosdc failed.  Autotools
-   builds `src` before `doc`, so `src/xroar` is already linked; a later
-   `make -C src` then reports `Nothing to be done`.  Confirm with
-   `-cart-type help` (`[part:cocosdc]`) and `-h` (`-sdc-root`).
+Confirm:
 
-   Optional — only if you want a full top-level `make` to also build the
-   info manual: `brew install texinfo` and put Homebrew’s keg-only
-   binary on PATH (`/opt/homebrew/opt/texinfo/bin` or
-   `/usr/local/opt/texinfo/bin`).
+```text
+grep -E 'HAVE_SDL3|WANT_UI_SDL|HAVE_GTK3' config.h
+src/xroar -ui help
+```
 
-3. ROM images (Colour BASIC / Super Extended BASIC, etc.) go in
-   `~/Library/XRoar/roms/`.  See `README` (“Getting started under Mac OS X+”).
+Expect `#define HAVE_SDL3 1`, `#define WANT_UI_SDL 1`, no `HAVE_GTK3`,
+and `-ui help`:
 
-4. Example:
+```text
+	sdl        SDL3 UI
+	null       No UI
+```
 
-   ```text
-   mkdir -p ~/sdc-root
-   printf 'hello from sdc\n' > ~/sdc-root/HELLO.TXT
-   src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2
-   ```
+Never pass `-ui sdl2`.  Use `-ui sdl` (the default on Mac after this
+fork skips GTK, but still the name to use).
+
+```text
+mkdir -p ~/sdc-root
+printf 'hello from sdc\n' > ~/sdc-root/HELLO.TXT
+src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -ui sdl -v 2
+```
+
+At `-v 2` the UI module line is:
+
+```text
+[module:sdl/ui] SDL3 UI
+```
+
+If you see `[module:gtk3/ui] GTK+ 3 UI` instead, the window will be
+white — rebuild with `--without-gtk3` or pass `-ui sdl` on an SDL3
+build that still listed `sdl` in `-ui help`.
+
+The emulator binary is `src/xroar`.  Optional: `sudo make install`
+(default prefix `/usr/local`).
+
+A top-level `make` also tries to build `doc/xroar.info`.  macOS does
+not ship `makeinfo`, so that can fail with `makeinfo: command not
+found` / Error 127.  That does **not** mean cocosdc failed.  Autotools
+builds `src` before `doc`, so `src/xroar` is already linked; a later
+`make -C src` then reports `Nothing to be done`.  Confirm with
+`-cart-type help` (`[part:cocosdc]`) and `-h` (`-sdc-root`).
+
+Optional — only if you want a full top-level `make` to also build the
+info manual: `brew install texinfo` and put Homebrew’s keg-only
+binary on PATH (`/opt/homebrew/opt/texinfo/bin` or
+`/usr/local/opt/texinfo/bin`).
+
+ROM images (Colour BASIC / Super Extended BASIC, etc.) go in
+`~/Library/XRoar/roms/`.  See `README` (“Getting started under Mac OS X+”).
 
 Host-side tests (same as CI; no emulator):
 
@@ -265,9 +300,36 @@ Host-side tests (same as CI; no emulator):
 ./tools/run-cocosdc-tests.sh
 ```
 
-`./configure --help` lists UI/audio backends.  If SDL 2 is found, the Mac build
-gets the usual XRoar menu extras.  This fork does not add a CMake path;
-configure/make is what the tree already uses.
+### Configure flags for `WANT_UI_SDL` / `sdl` without GTK3
+
+`WANT_UI_SDL` is **not** the same as `HAVE_SDL2`.  `HAVE_SDL2 1` with
+`WANT_UI_SDL` undefined is expected on Mac when Cocoa is found: the
+basic `sdl` UI is turned off in favour of `-ui macosx`.
+
+| Flag | Effect |
+| --- | --- |
+| `--without-gtk3` | Do not probe GTK+ 3 (no white window).  **Default on Darwin** in this fork. |
+| *(SDL3 found)* | Sets `HAVE_SDL3` and `WANT_UI_SDL` automatically.  UI name is `sdl` (“SDL3 UI”). |
+| `--enable-ui-sdl` | Force the basic `sdl` UI even if Cocoa would disable it.  **Not needed for SDL3.**  Needed for SDL2 if you want `-ui sdl` as well as/instead of Cocoa. |
+| `--without-cocoa` | Do not build `-ui macosx` (SDL2 Mac menus). |
+| `--with-sdl2` | Prefer SDL2 over SDL3.  Does **not** create `-ui sdl2`.  On Mac this usually builds Cocoa and leaves `WANT_UI_SDL` undefined. |
+| `--without-sdl3` | Skip SDL3 so an SDL2/Cocoa build can proceed if both are installed. |
+
+`./configure --help` lists the rest.  This fork does not add a CMake path.
+
+### SDL2 + Cocoa (menus; not the SDL3 path)
+
+If you only have SDL 2:
+
+```text
+brew install autoconf automake pkg-config sdl2 libpng
+./configure --without-gtk3 --without-sdl3
+```
+
+`-ui help` lists `macosx` (Mac OS X+ SDL2 UI), not `sdl`, unless you
+also pass `--enable-ui-sdl`.  Video works with `-ui macosx`.  `config.h`
+will have `HAVE_SDL2` and typically `HAVE_COCOA`; `WANT_UI_SDL` stays
+undefined.  That is expected.  Still never `-ui sdl2`.
 
 ### Optional Mac / CoCo smoke (not required for Phase D)
 
@@ -276,8 +338,8 @@ are available later:
 
 1. `mkdir -p ~/sdc-root` and put a small file there, e.g. `HELLO.TXT`.
 2. Rebuild with `make -C src` (Texinfo / `makeinfo` not required).
-3. Run `src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2`.
-4. Confirm `[part:cocosdc]` and `SD card root:` in the log.
+3. Run `src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -ui sdl -v 2`.
+4. Confirm `[module:sdl/ui] SDL3 UI`, `[part:cocosdc]`, and `SD card root:` in the log.
 5. If you have a minimal CommSDC probe (or Studio FileAccess):
    - `SDCOpenFile` / `$E0` with `"m:HELLO.TXT"` (256-byte name block), then
      `$80` LSN 0 — should return the file’s first 256 bytes (zero-padded).
