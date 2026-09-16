@@ -129,6 +129,45 @@ host file cannot be mounted in both (`FAILED\|$20`).
 A missing `-sdc-root`, or a path that does not exist, fails the command
 cleanly — CommSDC does not hang.
 
+## Phase B vs later (stream / BIGLOADM / Play)
+
+**Phase B is done** when the host tests below pass.  It is the FileAccess
+layer Studio uses for open/mount, directory listing, and buffered 256-byte
+reads and writes.  That is verifiable on Linux CI without a Mac, a CoCo, or
+an emulator binary.
+
+| In Phase B (this branch) | Not in Phase B — later |
+| --- | --- |
+| `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | Floppy-emulation latch (non-`$43` `$FF40`) |
+| VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | BIGLOADM |
+| Mount/eject `$E0/$E1` `m:`/`n:`/`M:` against `-sdc-root` | `$90/$91` 512-byte **stream** (Play / `m:` streaming) |
+| LSN `$80/$81` `$A0/$A1` (256 bytes at LSN×256) | Abort-stream semantics beyond not hanging on `$D0` |
+| Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Studio **Run** media integration |
+| Two slots, `FAILED` bits `$04/$08/$10/$20` | JVC/VDK/SDF header parse; FDC floppy image geometry |
+
+`$90` / `$D0` complete Not Busy so CommSDC does not hang; they do **not**
+deliver 512-byte stream payloads.  A host test asserts that `$90` is Not
+Busy with no READY block.
+
+An upstream PR to Ciaran is intentionally not part of this work.
+
+## Linux / CI (primary verification)
+
+No SDL, autotools, ROMs, or CoCo required:
+
+```text
+./tools/run-cocosdc-tests.sh
+```
+
+That compiles `tools/cocosdc_hw_test.c` (wait-loop, LSN latch, 256-byte RX)
+and `tools/cocosdc_fs_test.c` + `src/cocosdc_fs.c` against a `mkdtemp`
+sdc-root (mount, missing-path `FAILED|$10`, both slots, in-use, dir pages,
+CWD, sequential LSN write/read, mkdir/delete).
+
+After `./configure`, the same programs are `make -C src check` (`TESTS`).
+GitHub Actions workflow `.github/workflows/cocosdc-host.yml` runs the
+script on push.
+
 ## macOS build
 
 Linux CI cannot produce a Mac `.app`.  The tree is still autotools, same as
@@ -177,26 +216,20 @@ upstream XRoar.  On a Mac:
    src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2
    ```
 
-Host-side CommSDC wait-loop (no emulator):
+Host-side tests (same as CI; no emulator):
 
 ```text
-cc -std=c11 -Wall -Werror -Isrc -o /tmp/cocosdc_hw_test tools/cocosdc_hw_test.c
-/tmp/cocosdc_hw_test
-```
-
-Host-side mount / dir / 256-byte R/W against a temp folder:
-
-```text
-cc -std=c11 -Wall -Werror -I. -Isrc -o /tmp/cocosdc_fs_test \
-    tools/cocosdc_fs_test.c src/cocosdc_fs.c
-/tmp/cocosdc_fs_test
+./tools/run-cocosdc-tests.sh
 ```
 
 `./configure --help` lists UI/audio backends.  If SDL 2 is found, the Mac build
 gets the usual XRoar menu extras.  This fork does not add a CMake path;
 configure/make is what the tree already uses.
 
-### Mac test recipe (Phase B)
+### Optional Mac / CoCo smoke (not required for Phase B)
+
+Phase B acceptance is the Linux host tests.  When a Mac and CoCo program
+are available later:
 
 1. `mkdir -p ~/sdc-root` and put a small file there, e.g. `HELLO.TXT`.
 2. Rebuild with `make -C src` (Texinfo / `makeinfo` not required).
@@ -209,9 +242,4 @@ configure/make is what the tree already uses.
    - `$C0`+`'I'` after a successful mount returns the 8.3 name and size.
    - `$E0` `"L:*.*"` then `$C0`+`'>'` returns a directory page (does not hang).
 
-## Later phases (not in this branch)
-
-- BIGLOADM / `$90/$91` 512-byte stream / Play
-- Floppy-emulation latch mode
-- Studio Run media integration
-- Upstream PR to Ciaran is intentionally not part of this work
+Do not expect stream/Play/BIGLOADM or floppy-latch behaviour on this branch.
