@@ -7,6 +7,8 @@
  *  256-byte logical sector R/W follow SDC_FileAccess.asm.  Stream $90/$91
  *  (512-byte sectors) follows SDC_StreamFile_Library.asm / SDC_BigLoadm.asm
  *  / SDC_Play.asm (open/stream/abort; DAC timing is not in this layer).
+ *  When $FF40 is not $43, WD1773-ish FDC registers serve SDC-DOS Disk BASIC
+ *  LOAD/RUN/LOADM on an M: mounted DSK.  STARTUP.CFG auto-mounts at attach.
  *
  *  This is not a VCC SDC.dll port.
  *
@@ -37,6 +39,7 @@
 #include "xalloc.h"
 
 #include "cart.h"
+#include "cocosdc_fdc.h"
 #include "cocosdc_fs.h"
 #include "cocosdc_hw.h"
 #include "logging.h"
@@ -50,8 +53,11 @@
 struct cocosdc {
 	struct cart cart;
 	struct sdc_hw hw;
+	struct sdc_fdc fdc;
 	struct sdc_fs fs;
 	char *root;
+	uint8_t flash_data;
+	uint8_t flash_bank;
 };
 
 #define COCOSDC_SER_HW_BLOCK (10)
@@ -111,6 +117,7 @@ static void cocosdc_detach(struct cart *c);
 
 static void cocosdc_apply_root(struct cocosdc *sdc);
 static void cocosdc_log_completed(struct cocosdc *sdc);
+static void cocosdc_update_lines(struct cocosdc *sdc);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -133,7 +140,7 @@ static const struct partdb_entry_funcs cocosdc_funcs = {
 const struct cart_partdb_entry cocosdc_part = {
 	.partdb_entry = {
 		.name = "cocosdc",
-		.description = "Darren Atkinson | CoCoSDC (Phase D)",
+		.description = "Darren Atkinson | CoCoSDC (SDC-DOS floppy)",
 		.funcs = &cocosdc_funcs
 	}
 };
@@ -154,6 +161,7 @@ static struct part *cocosdc_allocate(void) {
 	c->detach = cocosdc_detach;
 
 	sdc_hw_reset(&sdc->hw);
+	sdc_fdc_reset(&sdc->fdc);
 	sdc_fs_init(&sdc->fs);
 
 	return p;
@@ -245,6 +253,16 @@ static void cocosdc_apply_root(struct cocosdc *sdc) {
 		return;
 	}
 	LOG_MOD_DEBUG(1, "cocosdc", "SD card root: %s\n", sdc->root);
+	{
+		int i;
+		for (i = 0; i < SDC_SLOTS; i++) {
+			if (sdc->fs.slot[i].host_path) {
+				LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG drive %d: %s%s\n",
+					      i, sdc->fs.slot[i].host_path,
+					      sdc->fs.slot[i].fdc_ok ? " (FDC)" : "");
+			}
+		}
+	}
 }
 
 static void cocosdc_log_payload(const struct cocosdc *sdc) {
@@ -324,13 +342,66 @@ static void cocosdc_log_completed(struct cocosdc *sdc) {
 	}
 }
 
+static void cocosdc_update_lines(struct cocosdc *sdc) {
+	struct cart *c = &sdc->cart;
+	if (sdc->hw.cmd_mode) {
+		DELEGATE_CALL(c->signal_halt, 0);
+		DELEGATE_CALL(c->signal_nmi, 0);
+		return;
+	}
+	DELEGATE_CALL(c->signal_halt, sdc_fdc_want_halt(&sdc->fdc) ? 1 : 0);
+	DELEGATE_CALL(c->signal_nmi, sdc_fdc_want_nmi(&sdc->fdc) ? 1 : 0);
+}
+
+static int cocosdc_flash_reg(uint16_t A) {
+	if ((A & 0xfff0) != 0xff40) {
+		return -1;
+	}
+	switch (A & 0x0f) {
+	case 0x02:
+	case 0x03:
+		return (int)(A & 0x0f);
+	default:
+		return -1;
+	}
+}
+
+static uint8_t cocosdc_flash_read(struct cocosdc *sdc, int reg) {
+	if (reg == 0x02) {
+		return sdc->flash_data;
+	}
+	/* SDC-DOS probes $FF43: bank in bits 0-2, last data in 3-7. */
+	return (uint8_t)((sdc->flash_bank & 0x07) | (sdc->flash_data & 0xf8));
+}
+
+static void cocosdc_flash_write(struct cocosdc *sdc, int reg, uint8_t D) {
+	if (reg == 0x02) {
+		sdc->flash_data = D;
+	} else {
+		sdc->flash_bank = (uint8_t)(D & 0x07);
+	}
+}
+
 static void cocosdc_reset(struct cart *c, bool hard) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
 	cart_rom_reset(c, hard);
 	sdc_hw_reset(&sdc->hw);
+	sdc_fdc_reset(&sdc->fdc);
 	if (hard) {
 		sdc_fs_reset(&sdc->fs);
+		(void)sdc_fs_apply_startup(&sdc->fs);
+		{
+			int i;
+			for (i = 0; i < SDC_SLOTS; i++) {
+				if (sdc->fs.slot[i].host_path) {
+					LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG drive %d: %s%s\n",
+						      i, sdc->fs.slot[i].host_path,
+						      sdc->fs.slot[i].fdc_ok ? " (FDC)" : "");
+				}
+			}
+		}
 	}
+	cocosdc_update_lines(sdc);
 }
 
 static void cocosdc_attach(struct cart *c) {
@@ -343,6 +414,8 @@ static void cocosdc_detach(struct cart *c) {
 
 static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_t D) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
+	int flash;
+	int reg;
 
 	if (R2) {
 		rombank_d8(c->ROM, A, &D);
@@ -352,20 +425,32 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 		return D;
 	}
 
-	int reg = sdc_hw_reg(A);
+	flash = cocosdc_flash_reg(A);
+	if (flash >= 0) {
+		return cocosdc_flash_read(sdc, flash);
+	}
+
+	reg = sdc_hw_reg(A);
 	if (reg < 0) {
 		return D;
 	}
-	D = sdc_hw_read(&sdc->hw, reg);
-	if (sdc->hw.cmd_ready) {
-		sdc_fs_execute(&sdc->fs, &sdc->hw);
+	if (sdc->hw.cmd_mode) {
+		D = sdc_hw_read(&sdc->hw, reg);
+		if (sdc->hw.cmd_ready) {
+			sdc_fs_execute(&sdc->fs, &sdc->hw);
+		}
+		cocosdc_log_completed(sdc);
+		return D;
 	}
-	cocosdc_log_completed(sdc);
+	D = sdc_fdc_read(&sdc->fdc, &sdc->fs, reg);
+	cocosdc_update_lines(sdc);
 	return D;
 }
 
 static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8_t D) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
+	int flash;
+	int reg;
 
 	if (R2) {
 		rombank_d8(c->ROM, A, &D);
@@ -375,15 +460,49 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 		return D;
 	}
 
-	int reg = sdc_hw_reg(A);
+	flash = cocosdc_flash_reg(A);
+	if (flash >= 0) {
+		cocosdc_flash_write(sdc, flash, D);
+		return D;
+	}
+
+	reg = sdc_hw_reg(A);
 	if (reg < 0) {
 		return D;
 	}
 
-	sdc_hw_write(&sdc->hw, reg, D);
-	if (sdc->hw.cmd_ready) {
-		sdc_fs_execute(&sdc->fs, &sdc->hw);
+	if (reg == 0x00) {
+		sdc_hw_write(&sdc->hw, reg, D);
+		if (D == SDC_CMDMODE) {
+			sdc->fdc.halt_enable = 0;
+			sdc->fdc.drq = 0;
+			sdc_fdc_set_intrq(&sdc->fdc, 0);
+			sdc->fdc.status = 0;
+		} else {
+			sdc_fdc_write(&sdc->fdc, &sdc->fs, 0x00, D);
+		}
+		cocosdc_update_lines(sdc);
+		return D;
 	}
-	cocosdc_log_completed(sdc);
+
+	if (sdc->hw.cmd_mode) {
+		sdc_hw_write(&sdc->hw, reg, D);
+		if (sdc->hw.cmd_ready) {
+			sdc_fs_execute(&sdc->fs, &sdc->hw);
+		}
+		cocosdc_log_completed(sdc);
+		return D;
+	}
+
+	if (logging.level >= 2 && reg == 0x08) {
+		LOG_MOD_DEBUG(2, "cocosdc", "FDC cmd $%02X drv=%u tr=%u se=%u side=%u\n",
+			      D, sdc->fdc.drive, sdc->fdc.track, sdc->fdc.sector, sdc->fdc.side);
+	}
+	sdc_fdc_write(&sdc->fdc, &sdc->fs, reg, D);
+	if (logging.level >= 2 && reg == 0x08) {
+		LOG_MOD_DEBUG(2, "cocosdc", "FDC status=$%02X%s%s\n", sdc->fdc.status,
+			      sdc->fdc.drq ? " DRQ" : "", sdc->fdc.intrq ? " INTRQ" : "");
+	}
+	cocosdc_update_lines(sdc);
 	return D;
 }

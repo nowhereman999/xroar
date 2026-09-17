@@ -138,6 +138,7 @@ xroar_SOURCES += \
 	idecart.c idecart.h \
 	cocosdc.c cocosdc_hw.h \
 	cocosdc_fs.c cocosdc_fs.h \
+	cocosdc_fdc.c cocosdc_fdc.h \
 	mooh.c \
 	mpi.c \
 	nx32.c \
@@ -616,7 +617,7 @@ cocosdc_hw_test_CPPFLAGS = -I$(top_srcdir)/src
 cocosdc_hw_test_CFLAGS = -std=c11 -Wall
 cocosdc_hw_test_LDADD =
 
-cocosdc_fs_test_SOURCES = $(top_srcdir)/tools/cocosdc_fs_test.c cocosdc_fs.c
+cocosdc_fs_test_SOURCES = $(top_srcdir)/tools/cocosdc_fs_test.c cocosdc_fs.c cocosdc_fdc.c
 cocosdc_fs_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
 cocosdc_fs_test_CFLAGS = -std=c11 -Wall
 cocosdc_fs_test_LDADD =
