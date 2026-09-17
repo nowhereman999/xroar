@@ -111,6 +111,28 @@ static void strip_slash(char *s) {
 	}
 }
 
+const char *sdc_fs_err_name(int err) {
+	if (err == 0) {
+		return "ok";
+	}
+	if (err == 1) {
+		return "no STARTUP.CFG";
+	}
+	if (err & SDC_ERR_NOTFOUND) {
+		return "not found";
+	}
+	if (err & SDC_ERR_INUSE) {
+		return "in use";
+	}
+	if (err & SDC_ERR_INVALID) {
+		return "invalid image/path";
+	}
+	if (err & SDC_ERR_MISC) {
+		return "open/io failed";
+	}
+	return "error";
+}
+
 int sdc_fs_set_root(struct sdc_fs *fs, const char *host_root) {
 	sdc_fs_reset(fs);
 	free(fs->root);
@@ -1354,24 +1376,46 @@ static char *trim_inplace(char *s) {
 	return s;
 }
 
+static char *strip_quotes(char *s) {
+	size_t n;
+	if (!s || s[0] == 0) {
+		return s;
+	}
+	n = strlen(s);
+	if (n >= 2 && ((s[0] == '"' && s[n - 1] == '"') || (s[0] == '\'' && s[n - 1] == '\''))) {
+		s[n - 1] = 0;
+		return s + 1;
+	}
+	return s;
+}
+
 int sdc_fs_apply_startup(struct sdc_fs *fs) {
 	char cfg[PATH_MAX];
 	char buf[512];
 	FILE *fp;
+	int first_err = 0;
+	int saw_cfg = 0;
 
 	if (!fs || !fs->root) {
-		return 0;
+		return 1;
 	}
 	if (lookup_child(fs->root, "STARTUP.CFG", 0, cfg, sizeof(cfg)) != 0) {
-		return 0;
+		return 1;
 	}
 	fp = fopen(cfg, "r");
 	if (!fp) {
-		return 0;
+		return 1;
 	}
+	saw_cfg = 1;
 	while (fgets(buf, (int)sizeof(buf), fp) != NULL) {
 		char *p = trim_inplace(buf);
 		char key;
+		int err;
+		if (p[0] == (char)0xef && (unsigned char)p[1] == 0xbb &&
+		    (unsigned char)p[2] == 0xbf) {
+			p += 3;
+			p = trim_inplace(p);
+		}
 		if (p[0] == 0 || p[0] == '#' || p[0] == ';') {
 			continue;
 		}
@@ -1383,16 +1427,24 @@ int sdc_fs_apply_startup(struct sdc_fs *fs) {
 		}
 		p++;
 		p = trim_inplace(p);
+		p = strip_quotes(p);
 		if (key == '0') {
-			(void)fs_mount_path(fs, 0, 'M', p, NULL);
+			err = fs_mount_path(fs, 0, 'M', p, NULL);
+			if (err && !first_err) {
+				first_err = err;
+			}
 		} else if (key == '1') {
-			(void)fs_mount_path(fs, 1, 'M', p, NULL);
+			err = fs_mount_path(fs, 1, 'M', p, NULL);
+			if (err && !first_err) {
+				first_err = err;
+			}
 		} else if (key == 'D') {
 			(void)fs_set_cwd(fs, p);
 		}
 	}
 	fclose(fp);
-	return 0;
+	(void)saw_cfg;
+	return first_err;
 }
 
 int sdc_fs_fdc_ready(const struct sdc_fs *fs, unsigned drive) {

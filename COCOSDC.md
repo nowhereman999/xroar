@@ -69,8 +69,8 @@ From the repo root (not `src/`):
 
 ```text
 git fetch origin
-git checkout cursor/cocosdc-sdc-dos-dsk-d7f5
-git pull origin cursor/cocosdc-sdc-dos-dsk-d7f5
+git checkout cursor/cocosdc-startup-cfg-fdc-12c0
+git pull origin cursor/cocosdc-startup-cfg-fdc-12c0
 ./configure --without-gtk2 --without-gtk3 --with-sdl2 && make
 ```
 
@@ -79,21 +79,27 @@ git pull origin cursor/cocosdc-sdc-dos-dsk-d7f5
 working 1.12.1-style video path).  Optional: `make -C src` skips the info
 manual.  Host tests (no ROM): `./tools/run-cocosdc-tests.sh`.
 
-SDC-DOS smoke (needs Glen’s `sdcdos.rom` and a DECB `.DSK` with `START.BAS`,
+SDC-DOS smoke (Glen’s Studio argv shape: DECB `.DSK` + `STARTUP.CFG` `0=….DSK`,
 **not** a loose FAT `START.BAS`):
 
 ```text
-mkdir -p ~/sdc-root
-# GAME.DSK = DECB image containing START.BAS; STARTUP.CFG = "0=GAME.DSK"
-src/xroar -machine coco3 -cart cocosdc \
+# sdc-root contains STARTUP.CFG (bytes `0=LAUNCH.DSK\r\n`) and LAUNCH.DSK
+src/xroar -machine coco3 -ram 2048 -cart cocosdc \
   -cart-rom ~/Library/XRoar/roms/sdcdos.rom \
-  -sdc-root ~/sdc-root -v 2 \
-  -type 'RUN"START"\r'
+  -sdc-root "/path/to/sdc-root" \
+  -type 'RUN"START"\r' -no-disk-writeback
 ```
 
-Expect `STARTUP.CFG drive 0: …/GAME.DSK (FDC)` in the log, then Disk BASIC
-`RUN"START"` without `?IO ERROR`.  Or omit the cfg and type
-`DRIVE 0,"GAME.DSK"` then `RUN"START"`.
+Quoted `-sdc-root` is fine (Google Drive spaces).  Default log level prints
+`SD card root:` and `STARTUP.CFG … drive 0: … (FDC)`.  A failed `0=` mount
+is a **WARNING** on stderr.  `-v 2` or `-debug-fdc -1` logs each FDC command.
+
+After `SDC-DOS 1.75 CC3 OK`, `DIR` lists `START.BAS` (and peers) without
+`DRIVE`, and `RUN"START"` must not return `?NE` / `?IO`.
+
+If `STARTUP.CFG` is missing, `DIR` is `?IO ERROR` (not an empty listing).
+An empty `DIR` + `?NE` on the previous tip was DECB treating an instant
+NOTREADY NMI as success (`ANDA #$7C` hides bit 7) with a zero buffer.
 
 ## Example `-sdc-root` layout
 
@@ -178,7 +184,7 @@ Command-mode behaviour:
 | Abort stream | `$D0` or `$FF40=0` | **Implemented** — `$D0` is Not Busy in the `$FF48` write (Play BREAK); `CLR $FF40` also aborts |
 | Play DAC / analog mux (`$FF20`) | | **Not in host tests** — register/stream contract only; 44750 Hz playback needs a live emulator |
 | CSM media-player menu / extra opcodes | | **Not used by Studio Play/FileAccess** (`.CSM` is a file format that also streams with `$90`) |
-| Floppy-emulation mode (non-`$43` latch) | | **Implemented** — WD1773-ish restore/seek/read/write sector on an `M:`/`N:` image; unmounted or `m:` raw → `NOTREADY` (Disk BASIC `?IO ERROR`).  HALT on `$FF40` bit 7 and INTRQ→NMI after the sector.  SDF / write-track / copy-protection not emulated |
+| Floppy-emulation mode (non-`$43` latch) | | **Implemented** — WD1773-ish restore/seek/read/write sector on an `M:`/`N:` image.  Unmounted or `m:` raw Type II stays `BUSY\|NOTREADY` **without** INTRQ so DECB’s DRQ poll times out (`?IO ERROR`); an instant NMI was `ANDA #$7C`’d into a fake empty `DIR` + `?NE`.  Type II complete status is 0 (not Type I `TRACK0`/`$04`, which DECB reads as lost data on track 0 / `START.BAS`).  `$FF40` bit 5 gates INTRQ→NMI; bit 7 is HALT.  While DRQ is set, `$FF4A` and `$FF4B` both supply data (`LDU $FF4A`).  SDF / write-track / copy-protection not emulated |
 | `$FF43` flash bank probe | | **Stub** — returns bank 0 (enough for SDC-DOS to see an SDC) |
 
 Files mounted with `m:` / `n:` are a raw array of 256-byte blocks (the
@@ -204,12 +210,14 @@ D=/GAMES
 
 `0=` / `1=` are `M:` disk-image mounts (so FDC/Disk BASIC work).  `D=`
 sets the SD current directory.  Lines are `key=path` with optional
-spaces; `#` comments are ignored.
+spaces and quotes; `#` comments and a UTF-8 BOM are ignored.  A failed
+`0=`/`1=` mount is a warning (`STARTUP.CFG … mount failed`).  Missing
+`STARTUP.CFG` is logged at default verbosity and is not an error.
 
 This is what SDC-DOS needs for `RUN"START"` at boot: Disk BASIC `RUN`
 and `LOAD` look at the **mounted floppy** (DECB directory on track 17),
 not at loose FAT files.  `DIR` with no arguments is the same — no image
-mounted → `?IO ERROR` on real hardware and here.
+mounted → `?IO ERROR` on real hardware and here (not an empty `OK`).
 
 Studio may stage `GAME.DSK` + `startup.cfg` under `-sdc-root`, or you can
 type `DRIVE 0,"GAME.DSK"` once SDC-DOS is up (`DRIVE` is SDC-DOS’s `M:`).
@@ -240,9 +248,11 @@ that path was Phase B.
 ## SDC-DOS floppy vs later
 
 Host tests cover Phases A–D plus FDC DSKCON-style restore/read/write on a
-synthetic 35-track DECB DSK, `M:` vs `m:`, JVC header skip, and
-`STARTUP.CFG` auto-mount.  Verifiable on Linux CI without a Mac, a CoCo
-ROM, or an emulator binary.
+synthetic 35-track DECB DSK, `M:` vs `m:`, JVC header skip,
+`STARTUP.CFG` auto-mount (including Glen’s `0=LAUNCH.DSK\r\n` bytes and an
+`sdc-root` path with spaces), DECB’s NMI/`ANDA #$7C` sector loop, and
+16-bit `$FF4A`/`$FF4B` FDC data.  Verifiable on Linux CI without a Mac, a
+CoCo ROM, or an emulator binary.
 
 | In this tip | Still not done |
 | --- | --- |
@@ -252,7 +262,7 @@ ROM, or an emulator binary.
 | LSN `$80/$81` `$A0/$A1` (256 bytes; header skipped on `M:`) | Remaining User Guide extras not used by Studio or SDC-DOS DSKCON |
 | Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Audible Play through the emulator sound path |
 | `$90/$91` 512-byte **stream**; Play interleaved refill; `$D0` abort-on-write | Zippster `.CSM` media-player menu |
-| **FDC** restore/seek/read/write sector + HALT/NMI for SDC-DOS `LOAD`/`RUN`/`LOADM` | |
+| **FDC** restore/seek/read/write sector + HALT/NMI (DECB DSKCON, no fake empty DIR) | |
 | **`STARTUP.CFG`** `0=`/`1=`/`D=` auto-mount on attach and hard reset | |
 
 `$9X` bit 1 (8-bit transfers via `$FF4B` only, `$92`/`$93`) is decoded.
@@ -276,7 +286,8 @@ a `mkdtemp` sdc-root (mount, missing-path `FAILED|$10`, both slots, in-use,
 dir pages, CWD, sequential LSN write/read, mkdir/delete, `$90/$91`
 multi-sector stream, `$D0` abort, Play `OpenSDC_File_X` + interleaved
 512-byte words, **`M:` DSK FDC DSKCON-style LOAD**, `m:` vs `M:`, JVC
-header skip, `STARTUP.CFG` auto-mount).
+header skip, `STARTUP.CFG` auto-mount, Glen `0=LAUNCH.DSK\r\n`, spaced
+sdc-root, DECB NMI sector loop, 16-bit FDC data).
 
 After `./configure`, the same programs are `make -C src check` (`TESTS`).
 GitHub Actions workflow `.github/workflows/cocosdc-host.yml` runs the

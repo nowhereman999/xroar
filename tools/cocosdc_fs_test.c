@@ -1025,6 +1025,143 @@ static void test_startup_cfg_and_jvc(void) {
 	sdc_fs_free(&fs2);
 }
 
+/* DECB DSKCON read: density+NMI ($29), command $80, poll DRQ, LDA $FF4B /
+ * STA $FF40 each byte, NMI terminates, ANDA #$7C → DCSTA.  Instant INTRQ
+ * before any data is the empty-DIR / ?NE bug. */
+static int decb_dskcon_read(struct sdc_fdc *f, uint8_t track, uint8_t sector,
+			    uint8_t *buf) {
+	unsigned i;
+	uint8_t st = 0;
+	int y;
+
+	memset(buf, 0xaa, SDC_BLOCK_SIZE);
+	sdc_fdc_write(f, &fs, 0x00, 0x29); /* motor + density/NMI + drv0 */
+	sdc_fdc_write(f, &fs, 0x09, track);
+	sdc_fdc_write(f, &fs, 0x0a, sector);
+	sdc_fdc_write(f, &fs, 0x08, 0x80);
+
+	if (sdc_fdc_want_nmi(f)) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		last_status = (uint8_t)(st & 0x7c);
+		return last_status == 0 ? 0 : -1;
+	}
+
+	for (y = 0; y < 4096; y++) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		if (st & SDC_FLP_DRQ) {
+			break;
+		}
+		if (sdc_fdc_want_nmi(f)) {
+			st = sdc_fdc_read(f, &fs, 0x08);
+			last_status = (uint8_t)(st & 0x7c);
+			return last_status == 0 ? 0 : -1;
+		}
+	}
+	if (!(st & SDC_FLP_DRQ)) {
+		sdc_fdc_write(f, &fs, 0x08, 0xd0);
+		last_status = 0x80;
+		return -1;
+	}
+	for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+		buf[i] = sdc_fdc_read(f, &fs, 0x0b);
+		sdc_fdc_write(f, &fs, 0x00, 0xa9);
+	}
+	st = sdc_fdc_read(f, &fs, 0x08);
+	last_status = (uint8_t)(st & 0x7c);
+	return last_status == 0 ? 0 : -1;
+}
+
+static void test_decb_dskcon_and_glen_cfg(void) {
+	char path[PATH_MAX];
+	char cfg[PATH_MAX];
+	char space_root[PATH_MAX];
+	const char *bas = "10 PRINT \"START\"\r";
+	uint8_t sec[SDC_BLOCK_SIZE];
+	uint8_t word[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	struct sdc_fs fs_space;
+	unsigned i;
+	/* Glen's host dump: 0=LAUNCH.DSK\r\n */
+	static const unsigned char glen_cfg[] = {
+		0x30, 0x3d, 0x4c, 0x41, 0x55, 0x4e, 0x43, 0x48,
+		0x2e, 0x44, 0x53, 0x4b, 0x0d, 0x0a
+	};
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(decb_dskcon_read(&fdc, 17, 2, sec) != 0,
+	      "DECB DSKCON unmounted times out (?IO), does not NMI-succeed");
+	check(last_status == 0x80, "unmounted DECB DCSTA is $80 not-ready");
+	check(sec[0] == 0xaa, "unmounted DECB did not deliver a fake empty sector");
+
+	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "write LAUNCH.DSK");
+		return;
+	}
+	if (snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", root_path) >= (int)sizeof(cfg) ||
+	    write_file(cfg, glen_cfg, sizeof(glen_cfg)) != 0) {
+		check(0, "write Glen STARTUP.CFG bytes");
+		return;
+	}
+
+	sdc_fs_reset(&fs);
+	check(sdc_fs_apply_startup(&fs) == 0, "apply Glen STARTUP.CFG 0=LAUNCH.DSK\\r\\n");
+	check(sdc_fs_fdc_ready(&fs, 0), "Glen CFG sets fdc_ok on drive 0");
+
+	sdc_fdc_reset(&fdc);
+	check(decb_dskcon_read(&fdc, 17, 2, sec) == 0, "DECB DSKCON DIR sector after CFG");
+	check(memcmp(sec, "START   BAS", 11) == 0, "DECB DIR lists START.BAS");
+	check(decb_dskcon_read(&fdc, 0, 1, sec) == 0 && memcmp(sec, bas, strlen(bas)) == 0,
+	      "DECB RUN START.BAS payload via FDC");
+
+	/* 16-bit LDU $FF4A / $FF4B while DRQ */
+	sdc_fdc_reset(&fdc);
+	sdc_fdc_write(&fdc, &fs, 0x00, 0xa9);
+	sdc_fdc_write(&fdc, &fs, 0x09, 17);
+	sdc_fdc_write(&fdc, &fs, 0x0a, 2);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0x80);
+	check(sdc_fdc_read(&fdc, &fs, 0x08) & SDC_FLP_DRQ, "16-bit path presents DRQ");
+	for (i = 0; i < SDC_BLOCK_SIZE; i += 2) {
+		word[i] = sdc_fdc_read(&fdc, &fs, 0x0a);
+		word[i + 1] = sdc_fdc_read(&fdc, &fs, 0x0b);
+	}
+	check(memcmp(word, "START   BAS", 11) == 0, "LDU $FF4A directory is START.BAS");
+
+	/* Hard reset unmounts then STARTUP.CFG remounts. */
+	sdc_fs_reset(&fs);
+	check(!sdc_fs_fdc_ready(&fs, 0), "hard reset unmounts");
+	check(sdc_fs_apply_startup(&fs) == 0, "hard reset reapplies Glen CFG");
+	check(sdc_fs_fdc_ready(&fs, 0), "hard reset remounts LAUNCH.DSK FDC");
+
+	/* Path with spaces (Google Drive style sdc-root). */
+	if (snprintf(space_root, sizeof(space_root), "%s/google drive", root_path) >=
+	    (int)sizeof(space_root) || mkdir(space_root, 0755) != 0) {
+		check(0, "mkdir sdc-root with spaces");
+		return;
+	}
+	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", space_root) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "LAUNCH.DSK under spaced sdc-root");
+		return;
+	}
+	if (snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", space_root) >= (int)sizeof(cfg) ||
+	    write_file(cfg, glen_cfg, sizeof(glen_cfg)) != 0) {
+		check(0, "STARTUP.CFG under spaced sdc-root");
+		return;
+	}
+	sdc_fs_init(&fs_space);
+	check(sdc_fs_set_root(&fs_space, space_root) == 0, "set_root path with spaces");
+	check(sdc_fs_fdc_ready(&fs_space, 0), "spaces in sdc-root still fdc_ok");
+	{
+		uint8_t dirsec[SDC_BLOCK_SIZE];
+		check(sdc_fs_fdc_read(&fs_space, 0, 17, 2, 0, dirsec) == 0 &&
+		      memcmp(dirsec, "START   BAS", 11) == 0,
+		      "directory sector readable from spaced sdc-root");
+	}
+	sdc_fs_free(&fs_space);
+}
+
 int main(void) {
 	char tmpl[] = "/tmp/cocosdc-fs-XXXXXX";
 	char path[PATH_MAX];
@@ -1084,6 +1221,7 @@ int main(void) {
 	test_play();
 	test_dsk_mount_and_fdc();
 	test_startup_cfg_and_jvc();
+	test_decb_dskcon_and_glen_cfg();
 	test_no_root();
 
 	sdc_fs_free(&fs);
@@ -1093,6 +1231,6 @@ int main(void) {
 		fprintf(stderr, "%d/%d check(s) failed\n", nfail, ncheck);
 		return 1;
 	}
-	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg)\n", ncheck);
+	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg/DECB DSKCON)\n", ncheck);
 	return 0;
 }

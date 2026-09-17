@@ -43,6 +43,7 @@ struct sdc_fdc {
 	unsigned drive;
 	unsigned side;
 	int halt_enable;
+	int nmi_enable; /* $FF40 bit 5 (DECB double-density / NMI gate) */
 	int drq;
 	int intrq;
 	int writing;
@@ -61,7 +62,11 @@ static inline int sdc_fdc_want_halt(const struct sdc_fdc *f) {
 }
 
 static inline int sdc_fdc_want_nmi(const struct sdc_fdc *f) {
-	return f->intrq;
+	/* Real CoCo FDC gates INTRQ→NMI with $FF40 bit 5 (MAME coco_fdc,
+	 * DECB ORA #$20).  Ungated NMI on Type II NOTREADY is taken before
+	 * DECB's DRQ poll times out; ANDA #$7C then hides bit 7 and DIR
+	 * "succeeds" with an empty buffer (?NE, not ?IO). */
+	return f->intrq && f->nmi_enable;
 }
 
 static inline void sdc_fdc_set_intrq(struct sdc_fdc *f, int on) {

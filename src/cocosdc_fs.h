@@ -98,8 +98,13 @@ int sdc_fs_set_root(struct sdc_fs *fs, const char *host_root);
 /* Execute a command whose params (and optional TX block) are ready. */
 void sdc_fs_execute(struct sdc_fs *fs, struct sdc_hw *hw);
 
-/* MCU STARTUP.CFG: 0=/1= image path, D= current directory.  Missing file is OK. */
+/* MCU STARTUP.CFG: 0=/1= image path, D= current directory.
+ * Returns 0 if applied (or CFG had no 0=/1=), 1 if STARTUP.CFG is missing,
+ * or SDC_ERR_* if a 0=/1= disk-image mount failed. */
 int sdc_fs_apply_startup(struct sdc_fs *fs);
+
+/* Human-readable SDC_ERR_* / apply_startup result for logs. */
+const char *sdc_fs_err_name(int err);
 
 /* FDC path: only M:/N: disk images, not m: raw mounts. */
 int sdc_fs_fdc_ready(const struct sdc_fs *fs, unsigned drive);

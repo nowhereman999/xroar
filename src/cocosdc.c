@@ -116,8 +116,11 @@ static void cocosdc_attach(struct cart *c);
 static void cocosdc_detach(struct cart *c);
 
 static void cocosdc_apply_root(struct cocosdc *sdc);
+static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when);
+static int cocosdc_apply_startup(struct cocosdc *sdc, const char *when);
 static void cocosdc_log_completed(struct cocosdc *sdc);
 static void cocosdc_update_lines(struct cocosdc *sdc);
+static void strip_root_quotes(char *s);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -188,6 +191,9 @@ static bool cocosdc_finish(struct part *p) {
 	if (!sdc->root && xroar.cfg.sdc.root) {
 		sdc->root = xstrdup(xroar.cfg.sdc.root);
 	}
+	if (sdc->root) {
+		strip_root_quotes(sdc->root);
+	}
 	cocosdc_apply_root(sdc);
 
 	return 1;
@@ -225,7 +231,63 @@ static bool cocosdc_write_elem(void *sptr, struct ser_handle *sh, int tag) {
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static void strip_root_quotes(char *s) {
+	size_t n;
+	if (!s || s[0] == 0) {
+		return;
+	}
+	n = strlen(s);
+	if (n >= 2 && ((s[0] == '"' && s[n - 1] == '"') || (s[0] == '\'' && s[n - 1] == '\''))) {
+		memmove(s, s + 1, n - 2);
+		s[n - 2] = 0;
+	}
+}
+
+static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when) {
+	int any = 0;
+	int i;
+
+	for (i = 0; i < SDC_SLOTS; i++) {
+		if (sdc->fs.slot[i].host_path) {
+			any = 1;
+			LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG %s drive %d: %s%s\n",
+				      when, i, sdc->fs.slot[i].host_path,
+				      sdc->fs.slot[i].fdc_ok ? " (FDC)" : " (not FDC)");
+			LOG_MOD_DEBUG_FDC(LOG_FDC_EVENTS, "cocosdc",
+					  "STARTUP.CFG %s drive %d: %s fdc_ok=%d\n",
+					  when, i, sdc->fs.slot[i].host_path,
+					  sdc->fs.slot[i].fdc_ok);
+			if (!sdc->fs.slot[i].fdc_ok) {
+				LOG_MOD_WARN("cocosdc", "STARTUP.CFG %s drive %d mounted '%s' but FDC is not ready (raw m: image?)\n",
+					     when, i, sdc->fs.slot[i].host_path);
+			}
+		}
+	}
+	if (!any) {
+		if (err == 1) {
+			LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG %s: no STARTUP.CFG in %s\n",
+				      when, sdc->fs.root ? sdc->fs.root : "(no root)");
+		} else if (err) {
+			LOG_MOD_WARN("cocosdc", "STARTUP.CFG %s: 0=/1= mount failed (%s, $%02X)\n",
+				     when, sdc_fs_err_name(err), err & 0xff);
+		} else {
+			LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG %s: file present but no 0=/1= disk mounted\n",
+				      when);
+		}
+	}
+	fflush(stdout);
+	fflush(stderr);
+}
+
+static int cocosdc_apply_startup(struct cocosdc *sdc, const char *when) {
+	int err = sdc_fs_apply_startup(&sdc->fs);
+	cocosdc_log_startup(sdc, err, when);
+	return err;
+}
+
 static void cocosdc_apply_root(struct cocosdc *sdc) {
+	int err;
+
 	if (!sdc->root || !sdc->root[0]) {
 		LOG_MOD_DEBUG(1, "cocosdc", "no SD card root; use -sdc-root DIR or -cart-opt sdc-root=DIR\n");
 		return;
@@ -237,6 +299,7 @@ static void cocosdc_apply_root(struct cocosdc *sdc) {
 		sdc->root = xstrdup(expanded);
 	}
 	sdsfree(expanded);
+	strip_root_quotes(sdc->root);
 
 	struct stat st;
 	if (stat(sdc->root, &st) != 0) {
@@ -253,16 +316,13 @@ static void cocosdc_apply_root(struct cocosdc *sdc) {
 		return;
 	}
 	LOG_MOD_DEBUG(1, "cocosdc", "SD card root: %s\n", sdc->root);
-	{
-		int i;
-		for (i = 0; i < SDC_SLOTS; i++) {
-			if (sdc->fs.slot[i].host_path) {
-				LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG drive %d: %s%s\n",
-					      i, sdc->fs.slot[i].host_path,
-					      sdc->fs.slot[i].fdc_ok ? " (FDC)" : "");
-			}
-		}
+	if (sdc->fs.slot[0].host_path || sdc->fs.slot[1].host_path) {
+		err = 0;
+	} else {
+		/* Distinguish missing CFG from a failed 0= mount. */
+		err = sdc_fs_apply_startup(&sdc->fs);
 	}
+	cocosdc_log_startup(sdc, err, "attach");
 }
 
 static void cocosdc_log_payload(const struct cocosdc *sdc) {
@@ -389,23 +449,20 @@ static void cocosdc_reset(struct cart *c, bool hard) {
 	sdc_fdc_reset(&sdc->fdc);
 	if (hard) {
 		sdc_fs_reset(&sdc->fs);
-		(void)sdc_fs_apply_startup(&sdc->fs);
-		{
-			int i;
-			for (i = 0; i < SDC_SLOTS; i++) {
-				if (sdc->fs.slot[i].host_path) {
-					LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG drive %d: %s%s\n",
-						      i, sdc->fs.slot[i].host_path,
-						      sdc->fs.slot[i].fdc_ok ? " (FDC)" : "");
-				}
-			}
-		}
+		(void)cocosdc_apply_startup(sdc, "hard reset");
 	}
 	cocosdc_update_lines(sdc);
 }
 
 static void cocosdc_attach(struct cart *c) {
+	struct cocosdc *sdc = (struct cocosdc *)c;
 	cart_rom_attach(c);
+	/* Finish already applied the root.  Re-apply STARTUP.CFG if a hard
+	 * reset later unmounted, or if attach races ahead of finish on some
+	 * hosts: only mount when drive 0 is empty and a root exists. */
+	if (sdc->fs.root && !sdc->fs.slot[0].host_path) {
+		(void)cocosdc_apply_startup(sdc, "cart attach");
+	}
 }
 
 static void cocosdc_detach(struct cart *c) {
@@ -495,13 +552,20 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 	}
 
 	if (logging.level >= 2 && reg == 0x08) {
-		LOG_MOD_DEBUG(2, "cocosdc", "FDC cmd $%02X drv=%u tr=%u se=%u side=%u\n",
-			      D, sdc->fdc.drive, sdc->fdc.track, sdc->fdc.sector, sdc->fdc.side);
+		LOG_MOD_DEBUG(2, "cocosdc", "FDC cmd $%02X drv=%u tr=%u se=%u side=%u nmi=%d\n",
+			      D, sdc->fdc.drive, sdc->fdc.track, sdc->fdc.sector, sdc->fdc.side,
+			      sdc->fdc.nmi_enable);
 	}
 	sdc_fdc_write(&sdc->fdc, &sdc->fs, reg, D);
-	if (logging.level >= 2 && reg == 0x08) {
-		LOG_MOD_DEBUG(2, "cocosdc", "FDC status=$%02X%s%s\n", sdc->fdc.status,
-			      sdc->fdc.drq ? " DRQ" : "", sdc->fdc.intrq ? " INTRQ" : "");
+	if ((logging.level >= 2 || (logging.debug_fdc & LOG_FDC_EVENTS)) && reg == 0x08) {
+		LOG_MOD_DEBUG(2, "cocosdc", "FDC status=$%02X%s%s%s ready=%d\n", sdc->fdc.status,
+			      sdc->fdc.drq ? " DRQ" : "", sdc->fdc.intrq ? " INTRQ" : "",
+			      sdc_fdc_want_nmi(&sdc->fdc) ? " NMI" : "",
+			      sdc_fs_fdc_ready(&sdc->fs, sdc->fdc.drive));
+		LOG_MOD_DEBUG_FDC(LOG_FDC_EVENTS, "cocosdc",
+				  "FDC cmd $%02X status=$%02X fdc_ok=%d\n",
+				  D, sdc->fdc.status,
+				  sdc_fs_fdc_ready(&sdc->fs, sdc->fdc.drive));
 	}
 	cocosdc_update_lines(sdc);
 	return D;
