@@ -21,6 +21,81 @@ open/stream/abort contract against that stream (not DAC audio, not Studio
 Run).  This tip adds **FDC floppy-emulation** for SDC-DOS Disk BASIC on a
 mounted `M:` image, plus MCU-style `STARTUP.CFG` auto-mount.
 
+**Live SDC-DOS FDC read/write of mounted `LAUNCH.DSK` is still open.**  Glen
+confirmed tip `5b20b429` did not fix Mac `DIR`/`SAVE`.  See
+[Codex handoff / open bug](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk).
+
+## Codex handoff / open bug (SDC-DOS FDC vs mounted LAUNCH.DSK)
+
+Handed to Codex.  **Do not treat host-test green as live-fixed.**  Stay on
+`cursor/cocosdc-startup-cfg-fdc-12c0`; do not merge `main`.
+
+### Status
+
+- Tip **`cursor/cocosdc-startup-cfg-fdc-12c0` @ `5b20b429`** is what Glen
+  rebuilt (`~/xroar` on that SHA).
+- Live **SDC-DOS 1.75 CC3** (green XRoar screen, 2026-09-17) still:
+  - `DRIVE 0,"LAUNCH.DSK"` → `OK`
+  - `DIR` → blank catalog, then `OK`
+  - `DSKINI0` → `68 GRANULES AVAILABLE` `OK`
+  - `SAVE"HEY"` → `OK`
+  - `DIR` still blank
+  - Autotype padding shows `:RUN"START"` on the same screen.
+- Host **`LAUNCH.DSK` after that session** (mtime ~**2026-09-17 09:20**):
+  still Studio-packed DISK1 layout
+  - T17 S1 zeros, S2 FAT, S3 `START.BAS` + `AUTOEXEC.BAS` + `MOVER.BIN` +
+    `CC3X0` + `COMP0000`–`3`
+  - **no `HEY` / `HEY.BAS` anywhere in the file bytes**
+  - `START.BAS` still at offset **78848**
+  - Not a freshly formatted disk
+
+### Studio side (already done — not the open bug)
+
+Tip **`cursor/cocosdc-run-fallback-ccbf` @ `5160773d`**: `LAUNCH.DSK` uses
+the same `RsdosDisk::new()` as DISK1 (FAT T17 S2, directory T17 S3).
+Autotype pads `:RUN"START"` for POLCAT.  Packing matches DISK1; the host
+catalog has `START.BAS`.  That is not why `DIR` is blank.
+
+### What this tip already tried
+
+- `STARTUP.CFG` `0=` **`M:`** FDC auto-mount, floppy geometry, Type II
+  status bits (no fake empty `DIR` from unmounted NOTREADY NMI; Type II
+  complete status 0 not TRACK0/`$04`)
+- DECB DIR sector notes (catalog is T17 **S3–S11**, not S2)
+- Seek/Restore **no instant INTRQ/NMI** (claimed VCC-like; DECB polls
+  `!BUSY`)
+- Write-track `$F4` fills 18 sectors with `$FF` in the mounted `M:` `FILE*`
+  (`fflush`+`fsync`)
+- Host tests (**220 checks**) asserting DIR after mount of a DISK1-layout
+  DSK, write then independent `fopen` read-back, Seek-must-not-NMI, DSKINI
+  persist
+
+**Those host tests are insufficient.**  They call `sdc_fdc_*` directly (no
+6809, no P2/SCS, no HALT, no SDC-DOS DSKCON).  Glen’s live SDC-DOS still
+sees an empty `DIR` and `SAVE"HEY"` does not mutate host `LAUNCH.DSK`.
+
+### Open bug for Codex (XRoar CoCoSDC FDC)
+
+SDC-DOS FDC path vs the **real mounted `M:` `LAUNCH.DSK`** under `-sdc-root`:
+
+1. **`DIR` must list host T17 S3 files** (`START.BAS` is present on the host
+   image at offset 78848).
+2. **`DSKINI0` + `SAVE"HEY"` + exit must leave `HEY.BAS` on that same host
+   file.**
+
+Today: commands return `OK`; directory empty; host file unchanged.
+
+### Hypotheses for Codex (non-binding — verify)
+
+- Wrong image/`FILE*` backing vs the `-sdc-root` path Glen mounted
+- Type II data register / DRQ stream not transferring 256 bytes into CoCo
+  RAM (`DBUF` stays empty; DIR/SAVE still report status 0)
+- Writes buffered / not flushed to the host file Glen inspected
+- Seek/NMI fix incomplete vs **real SDC-DOS 1.75 DSKCON** (not stock DECB
+  Unravelled, not the host-test loop)
+- Side / density / `$FF40` latch vs command mode
+- `DIR` using a different drive than the one `DRIVE 0,"LAUNCH.DSK"` mounted
+
 ## Enable the cartridge
 
 Built-in profile (same name as the type):
@@ -65,6 +140,10 @@ You should see `cocosdc`.
 
 ## Glen: fetch this tip and rebuild
 
+Live SDC-DOS on this SHA still has blank `DIR` / no host `SAVE` — see
+[Codex handoff / open bug](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk)
+before treating a rebuild as a fix.
+
 From the repo root (not `src/`):
 
 ```text
@@ -94,22 +173,17 @@ Quoted `-sdc-root` is fine (Google Drive spaces).  Default log level prints
 `SD card root:` and `STARTUP.CFG … drive 0: … (FDC)`.  A failed `0=` mount
 is a **WARNING** on stderr.  `-v 2` or `-debug-fdc -1` logs each FDC command.
 
-After `SDC-DOS 1.75 CC3 OK`, `DIR` lists `START.BAS` (and peers) without
-`DRIVE`, and `RUN"START"` must not return `?NE` / `?IO`.
+**Open on live SDC-DOS 1.75 (Glen, `5b20b429`):** after `DRIVE 0,"LAUNCH.DSK"`,
+`DIR` is still blank, `DSKINI0`/`SAVE"HEY"` still `OK`, host `LAUNCH.DSK`
+still has no `HEY.BAS`.  That is the Codex handoff, not a passing smoke.
 
-If `STARTUP.CFG` is missing, `DIR` is `?IO ERROR` (not an empty listing).
-An empty `DIR` + `?NE` on an earlier tip was DECB treating an instant
-NOTREADY NMI as success (`ANDA #$7C` hides bit 7) with a zero buffer.
-
-A later miss: **mounted** (`DRIVE` shows `0: ON LAUNCH.DSK`) but `DIR 0`
-prints nothing then `OK`, `DSKINI`/`SAVE` report OK, and the host
-`LAUNCH.DSK` is unchanged.  Disk BASIC `DIR` starts at **track 17 sector 3**
-(FAT is sector 2; `$00` = killed, `$FF` = end).  Studio packing (T17 S1
-zeros, S2 FAT, S3 catalog) is not that bug.  Type I Seek used to raise
-INTRQ while DSKCON already had `$FF40` bit 5 set; that NMI returns
-`DCSTA=0` with an empty `DBUF` so DIR is blank and SAVE never `fwrite`s.
-`-v 2` / `-debug-fdc` logs `FDC read T17 S3 "START   BAS"`;
-if S3 is empty and S2 looks like a catalog, that is a **WARNING**.
+If `STARTUP.CFG` is missing, `DIR` should be `?IO ERROR` (not an empty
+listing).  An empty `DIR` + `?NE` on an earlier tip was DECB treating an
+instant NOTREADY NMI as success (`ANDA #$7C` hides bit 7) with a zero
+buffer.  Disk BASIC `DIR` starts at **track 17 sector 3** (FAT is sector 2).
+Studio packing (T17 S1 zeros, S2 FAT, S3 catalog) matches DISK1 and is not
+the open bug.  `-v 2` / `-debug-fdc` logs `FDC read T17 S3 "START   BAS"`
+when the FDC buffer actually holds the catalog.
 
 ## Example `-sdc-root` layout
 
@@ -270,7 +344,9 @@ case (catalog only on S2), **host-file read-back after mount**, **write then
 independent fopen read-back** (HEY.BAS on T17 S3), DSKINI write-track
 persist, and Seek-with-`nmi_enable` must not INTRQ (the “status OK / zero
 DIR / no host mutation” regression).  Verifiable on Linux CI without a Mac,
-a CoCo ROM, or an emulator binary.
+a CoCo ROM, or an emulator binary.  **Green host tests did not predict
+Glen’s live SDC-DOS** — see
+[Codex handoff](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk).
 
 | In this tip | Still not done |
 | --- | --- |
@@ -280,7 +356,7 @@ a CoCo ROM, or an emulator binary.
 | LSN `$80/$81` `$A0/$A1` (256 bytes; header skipped on `M:`) | Remaining User Guide extras not used by Studio or SDC-DOS DSKCON |
 | Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Audible Play through the emulator sound path |
 | `$90/$91` 512-byte **stream**; Play interleaved refill; `$D0` abort-on-write | Zippster `.CSM` media-player menu |
-| **FDC** restore/seek/read/write sector + write-track format + HALT/NMI (DECB DSKCON; host `FILE*` persist) | |
+| **FDC** restore/seek/read/write sector + write-track format + HALT/NMI (host-test DSKCON; **live SDC-DOS DIR/SAVE still open**) | Live FDC vs mounted `LAUNCH.DSK` ([handoff](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk)) |
 | **`STARTUP.CFG`** `0=`/`1=`/`D=` auto-mount on attach and hard reset | |
 
 `$9X` bit 1 (8-bit transfers via `$FF4B` only, `$92`/`$93`) is decoded.
