@@ -102,10 +102,13 @@ An empty `DIR` + `?NE` on an earlier tip was DECB treating an instant
 NOTREADY NMI as success (`ANDA #$7C` hides bit 7) with a zero buffer.
 
 A later miss: **mounted** (`DRIVE` shows `0: ON LAUNCH.DSK`) but `DIR 0`
-prints nothing then `OK`.  Disk BASIC `DIR` starts at **track 17 sector 3**
-(FAT is sector 2; `$00` = killed, `$FF` = end).  A host dump that scans all
-of track 17, or looks at sector 2, can show `START.BAS` while DECB lists
-nothing.  `-v 2` / `-debug-fdc` logs `FDC read T17 S3 "START   BAS"`;
+prints nothing then `OK`, `DSKINI`/`SAVE` report OK, and the host
+`LAUNCH.DSK` is unchanged.  Disk BASIC `DIR` starts at **track 17 sector 3**
+(FAT is sector 2; `$00` = killed, `$FF` = end).  Studio packing (T17 S1
+zeros, S2 FAT, S3 catalog) is not that bug.  Type I Seek used to raise
+INTRQ while DSKCON already had `$FF40` bit 5 set; that NMI returns
+`DCSTA=0` with an empty `DBUF` so DIR is blank and SAVE never `fwrite`s.
+`-v 2` / `-debug-fdc` logs `FDC read T17 S3 "START   BAS"`;
 if S3 is empty and S2 looks like a catalog, that is a **WARNING**.
 
 ## Example `-sdc-root` layout
@@ -191,7 +194,7 @@ Command-mode behaviour:
 | Abort stream | `$D0` or `$FF40=0` | **Implemented** — `$D0` is Not Busy in the `$FF48` write (Play BREAK); `CLR $FF40` also aborts |
 | Play DAC / analog mux (`$FF20`) | | **Not in host tests** — register/stream contract only; 44750 Hz playback needs a live emulator |
 | CSM media-player menu / extra opcodes | | **Not used by Studio Play/FileAccess** (`.CSM` is a file format that also streams with `$90`) |
-| Floppy-emulation mode (non-`$43` latch) | | **Implemented** — WD1773-ish restore/seek/read/write sector on an `M:`/`N:` image.  Unmounted or `m:` raw Type II stays `BUSY\|NOTREADY` **without** INTRQ so DECB’s DRQ poll times out (`?IO ERROR`); an instant NMI was `ANDA #$7C`’d into a fake empty `DIR` + `?NE`.  Type II complete status is 0 (not Type I `TRACK0`/`$04`, which DECB reads as lost data on track 0 / `START.BAS`).  `$FF40` bit 5 gates INTRQ→NMI; bit 7 is HALT.  While DRQ is set, `$FF4A` and `$FF4B` both supply data (`LDU $FF4A`).  SDF / write-track / copy-protection not emulated |
+| Floppy-emulation mode (non-`$43` latch) | | **Implemented** — WD1773-ish restore/seek/read/write sector on an `M:`/`N:` image.  Type I completes `!BUSY` **without** INTRQ (DECB polls status after Seek; an instant NMI with `$FF40` bit 5 on returns empty `DIR` + `SAVE` that never hits the host file).  Unmounted or `m:` raw Type II stays `BUSY\|NOTREADY` **without** INTRQ so DECB’s DRQ poll times out (`?IO ERROR`).  Type II complete status is 0 (not Type I `TRACK0`/`$04`).  Write-track (`$F0`/`$F4`, DSKINI) fills that track’s 18 sectors with `$FF` in the same host `FILE*`.  `$FF40` bit 5 gates INTRQ→NMI; bit 7 is HALT (never asserted mid-sector).  While DRQ is set, `$FF4A` and `$FF4B` both supply data (`LDU $FF4A`).  SDF / copy-protection not emulated |
 | `$FF43` flash bank probe | | **Stub** — returns bank 0 (enough for SDC-DOS to see an SDC) |
 
 Files mounted with `m:` / `n:` are a raw array of 256-byte blocks (the
@@ -261,20 +264,23 @@ Host tests cover Phases A–D plus FDC DSKCON-style restore/read/write on a
 synthetic 35-track DECB DSK (FAT T17 S2, directory T17 S3–S11), `M:` vs
 `m:`, JVC header skip, `STARTUP.CFG` auto-mount (including Glen’s
 `0=LAUNCH.DSK\r\n` bytes and an `sdc-root` path with spaces), DECB’s
-NMI/`ANDA #$7C` sector loop, 16-bit `$FF4A`/`$FF4B` FDC data, a
-Studio-style multi-file `LAUNCH.DSK`, and a **mounted-but-DIR-empty**
-case (catalog only on S2).  Verifiable on Linux CI without a Mac, a
-CoCo ROM, or an emulator binary.
+NMI/`ANDA #$7C` sector loop **including Seek $17**, 16-bit `$FF4A`/`$FF4B`
+FDC data, a Studio-style multi-file `LAUNCH.DSK`, a **mounted-but-DIR-empty**
+case (catalog only on S2), **host-file read-back after mount**, **write then
+independent fopen read-back** (HEY.BAS on T17 S3), DSKINI write-track
+persist, and Seek-with-`nmi_enable` must not INTRQ (the “status OK / zero
+DIR / no host mutation” regression).  Verifiable on Linux CI without a Mac,
+a CoCo ROM, or an emulator binary.
 
 | In this tip | Still not done |
 | --- | --- |
-| `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | SDF / DMK copy-protection tracks; FDC write-track / format |
+| `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | SDF / DMK copy-protection tracks |
 | VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | Studio **Run** media integration (wire CoCo BASIC Studio to XRoar) |
 | Mount/eject `$E0/$E1` `m:`/`n:` raw and **`M:`/`N:` disk images** (JVC/VDK header) | Mount-next / disk-set (`+` / `#`) |
 | LSN `$80/$81` `$A0/$A1` (256 bytes; header skipped on `M:`) | Remaining User Guide extras not used by Studio or SDC-DOS DSKCON |
 | Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Audible Play through the emulator sound path |
 | `$90/$91` 512-byte **stream**; Play interleaved refill; `$D0` abort-on-write | Zippster `.CSM` media-player menu |
-| **FDC** restore/seek/read/write sector + HALT/NMI (DECB DSKCON, no fake empty DIR) | |
+| **FDC** restore/seek/read/write sector + write-track format + HALT/NMI (DECB DSKCON; host `FILE*` persist) | |
 | **`STARTUP.CFG`** `0=`/`1=`/`D=` auto-mount on attach and hard reset | |
 
 `$9X` bit 1 (8-bit transfers via `$FF4B` only, `$92`/`$93`) is decoded.
@@ -299,8 +305,9 @@ dir pages, CWD, sequential LSN write/read, mkdir/delete, `$90/$91`
 multi-sector stream, `$D0` abort, Play `OpenSDC_File_X` + interleaved
 512-byte words, **`M:` DSK FDC DSKCON-style LOAD**, `m:` vs `M:`, JVC
 header skip, `STARTUP.CFG` auto-mount, Glen `0=LAUNCH.DSK\r\n`, spaced
-sdc-root, DECB NMI sector loop, 16-bit FDC data, DECB DIR T17 S3 vs
-skewed S2 catalog).
+sdc-root, DECB NMI sector loop including Seek, 16-bit FDC data, DECB DIR T17 S3 vs
+skewed S2 catalog, host-file write then independent read-back, DSKINI
+write-track persist, Seek-must-not-NMI).
 
 After `./configure`, the same programs are `make -C src check` (`TESTS`).
 GitHub Actions workflow `.github/workflows/cocosdc-host.yml` runs the

@@ -963,9 +963,10 @@ static void test_dsk_mount_and_fdc(void) {
 	fdc_latch_drive0(&fdc);
 	fdc_restore(&fdc);
 	check(fdc.track == 0, "restore sets track 0");
-	check(fdc.intrq, "restore raises INTRQ");
-	(void)sdc_fdc_read(&fdc, &fs, 0x08);
-	check(!fdc.intrq, "status read clears INTRQ");
+	check(!fdc.intrq && !sdc_fdc_want_nmi(&fdc),
+	      "restore does not NMI (DECB polls !BUSY; instant INTRQ aborts DSKCON)");
+	last_status = sdc_fdc_read(&fdc, &fs, 0x08);
+	check(!(last_status & SDC_FLP_BUSY), "restore is not busy");
 	check(!(last_status & SDC_FLP_NOTREADY), "restore with mounted DSK is ready");
 
 	check(fdc_read_sector(&fdc, 17, 3, sec) == 0, "DSKCON read directory T17 S3");
@@ -1083,19 +1084,51 @@ static void test_startup_cfg_and_jvc(void) {
 	sdc_fs_free(&fs2);
 }
 
-/* DECB DSKCON read: density+NMI ($29), command $80, poll DRQ, LDA $FF4B /
- * STA $FF40 each byte, NMI terminates, ANDA #$7C → DCSTA.  Instant INTRQ
- * before any data is the empty-DIR / ?NE bug. */
+/* DECB DSKCON (Unravelled LD7F8): $FF40 density/NMI, Seek $17 polling
+ * !BUSY (not NMI), sector register, $80/$A0, poll DRQ, LDA/STA $FF4B /
+ * STA $FF40 each byte, NMI terminates, ANDA #$7C → DCSTA.
+ * Instant INTRQ before any Type II data is the empty-DIR / ?NE bug.
+ * Instant Seek INTRQ with nmi_enable is the same if NMIFLG is already set. */
+static int decb_dskcon_seek(struct sdc_fdc *f, uint8_t track) {
+	uint8_t st;
+
+	sdc_fdc_write(f, &fs, 0x09, f->track);
+	if (f->track == track) {
+		return 0;
+	}
+	sdc_fdc_write(f, &fs, 0x0b, track);
+	sdc_fdc_write(f, &fs, 0x08, 0x17);
+	if (sdc_fdc_want_nmi(f)) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		last_status = (uint8_t)(st & 0x7c);
+		return -2; /* Seek NMI: DSKCON would return without Type II */
+	}
+	st = sdc_fdc_read(f, &fs, 0x08);
+	if (st & SDC_FLP_BUSY) {
+		last_status = 0x80;
+		return -1;
+	}
+	return 0;
+}
+
 static int decb_dskcon_read(struct sdc_fdc *f, uint8_t track, uint8_t sector,
 			    uint8_t *buf) {
 	unsigned i;
 	uint8_t st = 0;
 	int y;
+	int rc;
 
 	memset(buf, 0xaa, SDC_BLOCK_SIZE);
 	sdc_fdc_write(f, &fs, 0x00, 0x29); /* motor + density/NMI + drv0 */
-	sdc_fdc_write(f, &fs, 0x09, track);
+	rc = decb_dskcon_seek(f, track);
+	if (rc == -2) {
+		return last_status == 0 ? 0 : -1;
+	}
+	if (rc != 0) {
+		return -1;
+	}
 	sdc_fdc_write(f, &fs, 0x0a, sector);
+	(void)sdc_fdc_read(f, &fs, 0x08); /* RESET INTRQ (LDA FDCREG) */
 	sdc_fdc_write(f, &fs, 0x08, 0x80);
 
 	if (sdc_fdc_want_nmi(f)) {
@@ -1123,10 +1156,85 @@ static int decb_dskcon_read(struct sdc_fdc *f, uint8_t track, uint8_t sector,
 	for (i = 0; i < SDC_BLOCK_SIZE; i++) {
 		buf[i] = sdc_fdc_read(f, &fs, 0x0b);
 		sdc_fdc_write(f, &fs, 0x00, 0xa9);
+		if (sdc_fdc_want_halt(f)) {
+			last_status = 0x04; /* lost data: HALT froze mid-sector */
+			return -1;
+		}
 	}
 	st = sdc_fdc_read(f, &fs, 0x08);
 	last_status = (uint8_t)(st & 0x7c);
 	return last_status == 0 ? 0 : -1;
+}
+
+static int decb_dskcon_write(struct sdc_fdc *f, uint8_t track, uint8_t sector,
+			     const uint8_t *buf) {
+	unsigned i;
+	uint8_t st = 0;
+	int y;
+	int rc;
+
+	sdc_fdc_write(f, &fs, 0x00, 0x29);
+	rc = decb_dskcon_seek(f, track);
+	if (rc == -2) {
+		return last_status == 0 ? 0 : -1;
+	}
+	if (rc != 0) {
+		return -1;
+	}
+	sdc_fdc_write(f, &fs, 0x0a, sector);
+	(void)sdc_fdc_read(f, &fs, 0x08);
+	sdc_fdc_write(f, &fs, 0x08, 0xa0);
+
+	if (sdc_fdc_want_nmi(f)) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		last_status = (uint8_t)(st & 0x7c);
+		return last_status == 0 ? 0 : -1;
+	}
+	for (y = 0; y < 4096; y++) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		if (st & SDC_FLP_DRQ) {
+			break;
+		}
+		if (sdc_fdc_want_nmi(f)) {
+			st = sdc_fdc_read(f, &fs, 0x08);
+			last_status = (uint8_t)(st & 0x7c);
+			return last_status == 0 ? 0 : -1;
+		}
+	}
+	if (!(st & SDC_FLP_DRQ)) {
+		sdc_fdc_write(f, &fs, 0x08, 0xd0);
+		last_status = 0x80;
+		return -1;
+	}
+	for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+		sdc_fdc_write(f, &fs, 0x0b, buf[i]);
+		sdc_fdc_write(f, &fs, 0x00, 0xa9);
+		if (sdc_fdc_want_halt(f)) {
+			last_status = 0x04;
+			return -1;
+		}
+	}
+	st = sdc_fdc_read(f, &fs, 0x08);
+	last_status = (uint8_t)(st & 0x7c);
+	return last_status == 0 ? 0 : -1;
+}
+
+static int host_read_dsk_sector(const char *path, unsigned track,
+				unsigned sector, uint8_t *buf) {
+	FILE *fp;
+	long off = (long)((track * 18u + (sector - 1u)) * 256u);
+
+	fp = fopen(path, "rb");
+	if (!fp) {
+		return -1;
+	}
+	if (fseek(fp, off, SEEK_SET) != 0 ||
+	    fread(buf, 1, SDC_BLOCK_SIZE, fp) != SDC_BLOCK_SIZE) {
+		fclose(fp);
+		return -1;
+	}
+	fclose(fp);
+	return 0;
 }
 
 /* DECB DIR (Unravelled CCA9): start T17 S3, $00 skip killed, $FF stop. */
@@ -1212,6 +1320,76 @@ static void test_mounted_dir_empty_vs_real_layout(void) {
 	check(dir_has(names, n, "MOVER   BIN"), "DIR 0 lists MOVER.BIN");
 	check(decb_dskcon_read(&fdc, 0, 1, sec) == 0 && memcmp(sec, "10 PRINT", 8) == 0,
 	      "RUN START.BAS payload is granule 0 / T0 S1");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+}
+
+static void test_fdc_host_persist_and_ok_empty_dir(void) {
+	char path[PATH_MAX];
+	char names[16][12];
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_BLOCK_SIZE];
+	uint8_t host[SDC_BLOCK_SIZE];
+	uint8_t wr[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	int n;
+
+	if (snprintf(path, sizeof(path), "%s/PERSIST.DSK", root_path) >= (int)sizeof(path) ||
+	    write_studio_launch_dsk(path) != 0) {
+		check(0, "write persist LAUNCH-layout DSK");
+		return;
+	}
+
+	put_cmd(block, "M:PERSIST.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: persist Studio DSK");
+	check(sdc_fs_fdc_ready(&fs, 0), "persist DSK fdc_ok");
+	check(host_read_dsk_sector(path, 17, 3, host) == 0 &&
+	      memcmp(host, "START   BAS", 11) == 0,
+	      "independent host fopen sees T17 S3 START.BAS before FDC");
+
+	sdc_fdc_reset(&fdc);
+	n = decb_dir_list(&fdc, names, 16);
+	check(n == 3, "DECB DIR after mount lists 3 files (not status-OK empty)");
+	check(dir_has(names, n, "START   BAS"), "DIR lists START.BAS from host T17 S3");
+
+	/* Status OK / zero DIR / no host mutation: Seek must not NMI. */
+	sdc_fdc_reset(&fdc);
+	sdc_fdc_write(&fdc, &fs, 0x00, 0x29);
+	sdc_fdc_write(&fdc, &fs, 0x0b, 17);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0x17);
+	check(!sdc_fdc_want_nmi(&fdc),
+	      "Seek $17 with nmi_enable does not INTRQ (would blank DIR)");
+	check(!(sdc_fdc_read(&fdc, &fs, 0x08) & SDC_FLP_BUSY), "Seek is not busy");
+	check(fdc.track == 17, "Seek sets track 17");
+
+	memset(wr, 0, sizeof(wr));
+	decb_put_dirent(wr, 0, "HEY     BAS", 0, 0xff, 3, 12);
+	memset(wr + 32, 0xff, SDC_BLOCK_SIZE - 32);
+	sdc_fdc_reset(&fdc);
+	check(decb_dskcon_write(&fdc, 17, 3, wr) == 0, "DSKCON write T17 S3 HEY.BAS");
+	sdc_fs_flush(&fs);
+
+	check(host_read_dsk_sector(path, 17, 3, host) == 0 &&
+	      memcmp(host, "HEY     BAS", 11) == 0,
+	      "host file mutated: HEY.BAS on T17 S3 after SAVE-style write");
+	check(decb_dskcon_read(&fdc, 17, 3, sec) == 0 &&
+	      memcmp(sec, "HEY     BAS", 11) == 0,
+	      "FDC read-back of written directory matches");
+
+	/* DSKINI write-track $F4 fills the track in the same host file. */
+	sdc_fdc_reset(&fdc);
+	sdc_fdc_write(&fdc, &fs, 0x00, 0x29);
+	sdc_fdc_write(&fdc, &fs, 0x09, 0);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0xf4);
+	check(sdc_fdc_want_nmi(&fdc) || fdc.intrq,
+	      "write-track NMIs so DSKINI can leave its HALT loop");
+	last_status = (uint8_t)(sdc_fdc_read(&fdc, &fs, 0x08) & 0x44);
+	check(last_status == 0, "DSKINI ANDA #$44 write-track status is 0");
+	sdc_fs_flush(&fs);
+	check(host_read_dsk_sector(path, 0, 1, host) == 0 && host[0] == 0xff &&
+	      host[255] == 0xff,
+	      "DSKINI write-track persisted $FF fill to host T0 S1");
+
 	put_cmd(block, "M:");
 	(void)comm_sdc(0xe0, 0, 0, block, 1);
 }
@@ -1368,6 +1546,7 @@ int main(void) {
 	test_startup_cfg_and_jvc();
 	test_decb_dskcon_and_glen_cfg();
 	test_mounted_dir_empty_vs_real_layout();
+	test_fdc_host_persist_and_ok_empty_dir();
 	test_no_root();
 
 	sdc_fs_free(&fs);
@@ -1377,6 +1556,6 @@ int main(void) {
 		fprintf(stderr, "%d/%d check(s) failed\n", nfail, ncheck);
 		return 1;
 	}
-	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg/DECB DSKCON/DIR layout)\n", ncheck);
+	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg/DECB DSKCON/DIR layout/host persist)\n", ncheck);
 	return 0;
 }

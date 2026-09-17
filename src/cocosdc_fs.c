@@ -1259,6 +1259,7 @@ static void cmd_write(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		return;
 	}
 	fflush(s->fp);
+	(void)fsync(fileno(s->fp));
 	sdc_hw_succeed(hw);
 }
 
@@ -1491,6 +1492,7 @@ static int fdc_xfer(struct sdc_fs *fs, unsigned drive, unsigned track,
 			return SDC_FDC_IO;
 		}
 		fflush(s->fp);
+		(void)fsync(fileno(s->fp));
 	} else {
 		size_t n = fread(buf, 1, SDC_BLOCK_SIZE, s->fp);
 		if (n < SDC_BLOCK_SIZE) {
@@ -1514,4 +1516,18 @@ int sdc_fs_fdc_read(struct sdc_fs *fs, unsigned drive, unsigned track,
 int sdc_fs_fdc_write(struct sdc_fs *fs, unsigned drive, unsigned track,
 		     unsigned sector, unsigned side, const uint8_t *buf) {
 	return fdc_xfer(fs, drive, track, sector, side, (uint8_t *)buf, 1);
+}
+
+void sdc_fs_flush(struct sdc_fs *fs) {
+	int i;
+
+	if (!fs) {
+		return;
+	}
+	for (i = 0; i < SDC_SLOTS; i++) {
+		if (fs->slot[i].fp) {
+			fflush(fs->slot[i].fp);
+			(void)fsync(fileno(fs->slot[i].fp));
+		}
+	}
 }

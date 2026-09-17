@@ -202,6 +202,7 @@ static bool cocosdc_finish(struct part *p) {
 
 static void cocosdc_free(struct part *p) {
 	struct cocosdc *sdc = (struct cocosdc *)p;
+	sdc_fs_flush(&sdc->fs);
 	sdc_fs_free(&sdc->fs);
 	free(sdc->root);
 	sdc->root = NULL;
@@ -506,6 +507,8 @@ static void cocosdc_attach(struct cart *c) {
 }
 
 static void cocosdc_detach(struct cart *c) {
+	struct cocosdc *sdc = (struct cocosdc *)c;
+	sdc_fs_flush(&sdc->fs);
 	cart_rom_detach(c);
 }
 

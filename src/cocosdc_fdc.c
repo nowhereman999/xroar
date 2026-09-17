@@ -2,10 +2,12 @@
  *
  *  \brief CoCoSDC floppy-emulation commands (WD1773-ish).
  *
- *  Restore/seek complete immediately.  Read/write sector maps CHS through
- *  sdc_fs_fdc_read/write onto a mounted M: image.  m: raw mounts report
- *  NOTREADY on the FDC path (User Guide: FDC is not supported for raw
- *  blocks).
+ *  Restore/seek complete immediately with BUSY clear and no INTRQ (DECB
+ *  DSKCON polls $FF48 bit 0; VCC's working SDC Seek is the same).  Read/
+ *  write sector maps CHS through sdc_fs_fdc_read/write onto a mounted M:
+ *  image.  Write-track ($F0/$F4, DSKINI) fills that track's 18 sectors
+ *  with $FF in the same host file.  m: raw mounts report NOTREADY on the
+ *  FDC path (User Guide: FDC is not supported for raw blocks).
  *
  *  Type II/III NOTREADY stays BUSY without DRQ or INTRQ so DECB's DRQ poll
  *  times out to ?IO ERROR.  Instant INTRQ is taken as NMI while NMIFLG is
@@ -85,6 +87,54 @@ static void fdc_type2_not_ready(struct sdc_fdc *f) {
 	f->status = (uint8_t)(SDC_FLP_BUSY | SDC_FLP_NOTREADY);
 }
 
+static void fdc_type1_done(struct sdc_fdc *f, struct sdc_fs *fs) {
+	/* DECB LD7D1 waits for !BUSY after Restore/Seek.  Raising INTRQ here
+	 * NMIs (DSKCON already wrote $FF40 bit 5) and, if NMIFLG is set,
+	 * returns DCSTA=0 with DBUF untouched — blank DIR / SAVE that never
+	 * hits the host file. */
+	f->intrq = 0;
+	f->drq = 0;
+	f->writing = 0;
+	f->buf_i = 0;
+	f->buf_n = 0;
+	f->status = sdc_fdc_idle_status(fs, f);
+}
+
+static void fdc_write_track(struct sdc_fdc *f, struct sdc_fs *fs) {
+	uint8_t fill[SDC_BLOCK_SIZE];
+	unsigned sec;
+	int rc;
+
+	if (!sdc_fs_fdc_ready(fs, f->drive)) {
+		fdc_type2_not_ready(f);
+		return;
+	}
+	if (sdc_fs_fdc_wp(fs, f->drive)) {
+		sdc_fdc_finish(f, SDC_FLP_WP);
+		return;
+	}
+	/* DSKINI $F4 streams a raw track then NMIs.  A DSK image has no
+	 * IDAMs — fill the 18 logical sectors so the host file changes. */
+	memset(fill, 0xff, sizeof(fill));
+	for (sec = 1; sec <= SDC_FLOPPY_SPT; sec++) {
+		rc = sdc_fs_fdc_write(fs, f->drive, f->track, (uint8_t)sec,
+				      f->side, fill);
+		if (rc == SDC_FDC_NOTREADY) {
+			fdc_type2_not_ready(f);
+			return;
+		}
+		if (rc == SDC_FDC_WP) {
+			sdc_fdc_finish(f, SDC_FLP_WP);
+			return;
+		}
+		if (rc != 0) {
+			sdc_fdc_finish(f, SDC_FLP_RNF);
+			return;
+		}
+	}
+	sdc_fdc_finish(f, fdc_type2_ok());
+}
+
 void sdc_fdc_command(struct sdc_fdc *f, struct sdc_fs *fs, uint8_t cmd) {
 	unsigned family = cmd >> 4;
 	int rc;
@@ -94,33 +144,34 @@ void sdc_fdc_command(struct sdc_fdc *f, struct sdc_fs *fs, uint8_t cmd) {
 	f->buf_i = 0;
 	f->buf_n = 0;
 	f->drq = 0;
+	f->intrq = 0; /* WD1773: command write clears INTRQ */
 
 	switch (family) {
 	case 0x0: /* Restore */
 		f->track = 0;
-		sdc_fdc_finish(f, sdc_fdc_idle_status(fs, f));
+		fdc_type1_done(f, fs);
 		break;
 	case 0x1: /* Seek: track := data register */
 		f->track = f->data;
-		sdc_fdc_finish(f, sdc_fdc_idle_status(fs, f));
+		fdc_type1_done(f, fs);
 		break;
 	case 0x2: /* Step */
 	case 0x3:
-		sdc_fdc_finish(f, sdc_fdc_idle_status(fs, f));
+		fdc_type1_done(f, fs);
 		break;
 	case 0x4: /* Step in */
 	case 0x5:
 		if (f->track < 255) {
 			f->track++;
 		}
-		sdc_fdc_finish(f, sdc_fdc_idle_status(fs, f));
+		fdc_type1_done(f, fs);
 		break;
 	case 0x6: /* Step out */
 	case 0x7:
 		if (f->track > 0) {
 			f->track--;
 		}
-		sdc_fdc_finish(f, sdc_fdc_idle_status(fs, f));
+		fdc_type1_done(f, fs);
 		break;
 	case 0x8: /* Read sector */
 	case 0x9:
@@ -163,7 +214,13 @@ void sdc_fdc_command(struct sdc_fdc *f, struct sdc_fs *fs, uint8_t cmd) {
 			f->intrq = 0;
 		}
 		break;
-	default: /* Read/write track */
+	case 0xe: /* Read track */
+		sdc_fdc_finish(f, SDC_FLP_RNF | sdc_fdc_idle_status(fs, f));
+		break;
+	case 0xf: /* Write track (DSKINI $F4) */
+		fdc_write_track(f, fs);
+		break;
+	default:
 		sdc_fdc_finish(f, SDC_FLP_RNF | sdc_fdc_idle_status(fs, f));
 		break;
 	}

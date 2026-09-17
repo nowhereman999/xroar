@@ -115,5 +115,7 @@ int sdc_fs_fdc_read(struct sdc_fs *fs, unsigned drive, unsigned track,
 		    unsigned sector, unsigned side, uint8_t *buf);
 int sdc_fs_fdc_write(struct sdc_fs *fs, unsigned drive, unsigned track,
 		     unsigned sector, unsigned side, const uint8_t *buf);
+/* fflush+fsync mounted M: FILE*s so DSKINI/SAVE are visible after exit. */
+void sdc_fs_flush(struct sdc_fs *fs);
 
 #endif

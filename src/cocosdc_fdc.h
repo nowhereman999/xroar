@@ -10,7 +10,10 @@
  *  - $FF49 track, $FF4A sector, $FF4B data
  *
  *  Status bits match a WD1773 type II/III read: BUSY, DRQ, RNF, WP,
- *  NOTREADY.  Type I (restore/seek) completes immediately and raises INTRQ.
+ *  NOTREADY.  Type I (restore/seek/step) completes immediately with BUSY
+ *  clear and does **not** raise INTRQ (DECB polls !BUSY; VCC Seek is the
+ *  same).  Instant Type I INTRQ with $FF40 bit 5 already on is an NMI that
+ *  can abort DSKCON with an empty buffer (blank DIR, SAVE never fwrite's).
  *  This is not a cycle-accurate WD chip — sectors are supplied from the
  *  host file as soon as the command is written (VCC sdc.dll approach).
  */
@@ -58,6 +61,12 @@ static inline void sdc_fdc_reset(struct sdc_fdc *f) {
 }
 
 static inline int sdc_fdc_want_halt(const struct sdc_fdc *f) {
+	/* Never HALT while a sector is in flight.  DECB writes halt-enable
+	 * after each DATREG access; if DRQ were clear the CPU would freeze
+	 * and NMI (checked only when !HALT) would never run. */
+	if (f->buf_n != 0) {
+		return 0;
+	}
 	return f->halt_enable && !f->intrq && !f->drq;
 }
 
