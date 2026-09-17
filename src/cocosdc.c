@@ -117,6 +117,7 @@ static void cocosdc_detach(struct cart *c);
 
 static void cocosdc_apply_root(struct cocosdc *sdc);
 static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when);
+static void cocosdc_log_fdc_dir(struct cocosdc *sdc);
 static int cocosdc_apply_startup(struct cocosdc *sdc, const char *when);
 static void cocosdc_log_completed(struct cocosdc *sdc);
 static void cocosdc_update_lines(struct cocosdc *sdc);
@@ -277,6 +278,45 @@ static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when) 
 	}
 	fflush(stdout);
 	fflush(stderr);
+}
+
+static int fdc_printable_name(const uint8_t *b, char out[12]) {
+	unsigned i;
+	for (i = 0; i < 11; i++) {
+		if (b[i] < 32 || b[i] > 126) {
+			return 0;
+		}
+		out[i] = (char)b[i];
+	}
+	out[11] = 0;
+	return 1;
+}
+
+/* DECB DIR starts at T17 S3.  A catalog parked on S2 (the FAT) looks fine to a
+ * host hex dump of track 17 but DIR prints nothing. */
+static void cocosdc_log_fdc_dir(struct cocosdc *sdc) {
+	char name[12];
+	uint8_t fat[SDC_BLOCK_SIZE];
+	uint8_t first;
+
+	if (!sdc->fdc.drq || sdc->fdc.track != 17 || sdc->fdc.sector != 3) {
+		return;
+	}
+	if (fdc_printable_name(sdc->fdc.buf, name)) {
+		LOG_MOD_DEBUG(1, "cocosdc", "FDC DECB DIR T17 S3: \"%s\"\n", name);
+		return;
+	}
+	first = sdc->fdc.buf[0];
+	if (sdc_fs_fdc_read(&sdc->fs, sdc->fdc.drive, 17, 2, 0, fat) == 0 &&
+	    fdc_printable_name(fat, name)) {
+		LOG_MOD_WARN("cocosdc",
+			     "DECB DIR T17 S3 is empty ($%02X); T17 S2 looks like a catalog \"%s\". "
+			     "Disk BASIC lists sectors 3-11; the FAT belongs on sector 2.\n",
+			     first, name);
+	} else {
+		LOG_MOD_DEBUG(1, "cocosdc", "FDC DECB DIR T17 S3 first byte $%02X (empty catalog)\n",
+			      first);
+	}
 }
 
 static int cocosdc_apply_startup(struct cocosdc *sdc, const char *when) {
@@ -557,6 +597,17 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 			      sdc->fdc.nmi_enable);
 	}
 	sdc_fdc_write(&sdc->fdc, &sdc->fs, reg, D);
+	if (reg == 0x08 && (D & 0xe0) == 0x80 && sdc->fdc.drq) {
+		char peek[12];
+		if (fdc_printable_name(sdc->fdc.buf, peek)) {
+			LOG_MOD_DEBUG(2, "cocosdc", "FDC read T%u S%u \"%s\"\n",
+				      sdc->fdc.track, sdc->fdc.sector, peek);
+		} else {
+			LOG_MOD_DEBUG(2, "cocosdc", "FDC read T%u S%u first=$%02X\n",
+				      sdc->fdc.track, sdc->fdc.sector, sdc->fdc.buf[0]);
+		}
+		cocosdc_log_fdc_dir(sdc);
+	}
 	if ((logging.level >= 2 || (logging.debug_fdc & LOG_FDC_EVENTS)) && reg == 0x08) {
 		LOG_MOD_DEBUG(2, "cocosdc", "FDC status=$%02X%s%s%s ready=%d\n", sdc->fdc.status,
 			      sdc->fdc.drq ? " DRQ" : "", sdc->fdc.intrq ? " INTRQ" : "",

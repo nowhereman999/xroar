@@ -106,7 +106,9 @@ int sdc_fs_apply_startup(struct sdc_fs *fs);
 /* Human-readable SDC_ERR_* / apply_startup result for logs. */
 const char *sdc_fs_err_name(int err);
 
-/* FDC path: only M:/N: disk images, not m: raw mounts. */
+/* FDC path: only M:/N: disk images, not m: raw mounts.
+ * CHS is 1-based sector (WD1773).  DECB DIR is track 17 sectors 3–11;
+ * the FAT is track 17 sector 2. */
 int sdc_fs_fdc_ready(const struct sdc_fs *fs, unsigned drive);
 int sdc_fs_fdc_wp(const struct sdc_fs *fs, unsigned drive);
 int sdc_fs_fdc_read(struct sdc_fs *fs, unsigned drive, unsigned track,

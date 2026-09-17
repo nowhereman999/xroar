@@ -797,12 +797,29 @@ static void test_no_root(void) {
 	check(sdc_fs_set_root(&fs, root_path) == 0, "restore sdc-root");
 }
 
-/* 35-track SS DECB DSK: GAT T17 S1, directory T17 S2, START.BAS in granule 0. */
-#define DECB_DSK_BYTES (35 * 18 * 256)
-#define DECB_GAT_OFF   ((17 * 18 + 0) * 256)
-#define DECB_DIR_OFF   ((17 * 18 + 1) * 256)
+/* Disk Basic Unravelled / Toolshed / Studio rsdos.rs:
+ * T17 S1 unused, T17 S2 FAT, T17 S3–S11 directory (8×32-byte entries).
+ * First byte $00 = killed (skip); $FF = never used (DIR stops).
+ * A catalog on S2 is invisible to DECB DIR — the "mounted but DIR empty" miss. */
+#define DECB_DSK_BYTES     (35 * 18 * 256)
+#define DECB_FAT_OFF       ((17 * 18 + 1) * 256)
+#define DECB_DIR_OFF       ((17 * 18 + 2) * 256)
+#define DECB_SKEW_DIR_OFF  ((17 * 18 + 1) * 256)
 
-static int write_decb_dsk(const char *path, const char *payload, size_t pay_n) {
+static void decb_put_dirent(uint8_t *dir, int slot, const char *name11,
+			    uint8_t typ, uint8_t asc, uint8_t gran, uint16_t last) {
+	uint8_t *e = dir + slot * 32;
+	memset(e, 0, 32);
+	memcpy(e, name11, 11);
+	e[11] = typ;
+	e[12] = asc;
+	e[13] = gran;
+	e[14] = (uint8_t)(last >> 8);
+	e[15] = (uint8_t)last;
+}
+
+static int write_decb_dsk_layout(const char *path, const char *payload, size_t pay_n,
+				 int dir_on_s3) {
 	uint8_t *img;
 	uint8_t *dir;
 	size_t n = pay_n > 255 ? 255 : pay_n;
@@ -812,16 +829,57 @@ static int write_decb_dsk(const char *path, const char *payload, size_t pay_n) {
 	if (!img) {
 		return -1;
 	}
-	memset(img + DECB_GAT_OFF, 0xff, 256);
-	img[DECB_GAT_OFF + 0] = (uint8_t)(0xc0 | 1); /* granule 0 last, 1 sector */
-	dir = img + DECB_DIR_OFF;
-	memcpy(dir, "START   BAS", 11);
-	dir[11] = 0;    /* BASIC */
-	dir[12] = 0xff; /* ASCII */
-	dir[13] = 0;    /* first granule */
-	dir[14] = 0;
-	dir[15] = (uint8_t)n;
+	memset(img + DECB_FAT_OFF, 0xff, 256);
+	img[DECB_FAT_OFF + 0] = (uint8_t)(0xc0 | 1);
+	if (dir_on_s3) {
+		dir = img + DECB_DIR_OFF;
+		memset(dir, 0xff, 256);
+	} else {
+		/* Wrong: catalog on the FAT sector (old unit-test layout). */
+		dir = img + DECB_SKEW_DIR_OFF;
+	}
+	decb_put_dirent(dir, 0, "START   BAS", 0, 0xff, 0, (uint16_t)n);
 	memcpy(img, payload, n);
+	if (write_file(path, img, DECB_DSK_BYTES) == 0) {
+		rc = 0;
+	}
+	free(img);
+	return rc;
+}
+
+static int write_decb_dsk(const char *path, const char *payload, size_t pay_n) {
+	return write_decb_dsk_layout(path, payload, pay_n, 1);
+}
+
+static int write_decb_dsk_skewed(const char *path, const char *payload, size_t pay_n) {
+	return write_decb_dsk_layout(path, payload, pay_n, 0);
+}
+
+/* Studio RsdosDisk: unused entries $FF, FAT on S2, catalog on S3, granule 0 at T0 S1. */
+static int write_studio_launch_dsk(const char *path) {
+	static const char start[] = "10 PRINT \"START\"\r";
+	static const char autoexec[] = "10 RUN\"START\"\r";
+	static const char mover[] = "MOVER";
+	uint8_t *img;
+	uint8_t *dir;
+	int rc = -1;
+
+	img = calloc(1, DECB_DSK_BYTES);
+	if (!img) {
+		return -1;
+	}
+	memset(img + DECB_FAT_OFF, 0xff, 256);
+	img[DECB_FAT_OFF + 0] = (uint8_t)(0xc0 | 1);
+	img[DECB_FAT_OFF + 1] = (uint8_t)(0xc0 | 1);
+	img[DECB_FAT_OFF + 2] = (uint8_t)(0xc0 | 1);
+	dir = img + DECB_DIR_OFF;
+	memset(dir, 0xff, 9 * 256);
+	decb_put_dirent(dir, 0, "START   BAS", 0, 0xff, 0, (uint16_t)strlen(start));
+	decb_put_dirent(dir, 1, "AUTOEXECBAS", 0, 0xff, 1, (uint16_t)strlen(autoexec));
+	decb_put_dirent(dir, 2, "MOVER   BIN", 2, 0, 2, (uint16_t)strlen(mover));
+	memcpy(img + 0 * 9 * 256, start, strlen(start));
+	memcpy(img + 1 * 9 * 256, autoexec, strlen(autoexec));
+	memcpy(img + 2 * 9 * 256, mover, strlen(mover));
 	if (write_file(path, img, DECB_DSK_BYTES) == 0) {
 		rc = 0;
 	}
@@ -910,7 +968,7 @@ static void test_dsk_mount_and_fdc(void) {
 	check(!fdc.intrq, "status read clears INTRQ");
 	check(!(last_status & SDC_FLP_NOTREADY), "restore with mounted DSK is ready");
 
-	check(fdc_read_sector(&fdc, 17, 2, sec) == 0, "DSKCON read directory T17 S2");
+	check(fdc_read_sector(&fdc, 17, 3, sec) == 0, "DSKCON read directory T17 S3");
 	check(memcmp(sec, "START   BAS", 11) == 0, "directory entry START.BAS");
 	check(sec[12] == 0xff && sec[13] == 0, "ASCII BASIC granule 0");
 	check(sdc_fdc_want_nmi(&fdc) || !fdc.drq, "sector complete drops DRQ");
@@ -918,8 +976,8 @@ static void test_dsk_mount_and_fdc(void) {
 	check(fdc_read_sector(&fdc, 0, 1, sec) == 0, "DSKCON read T0 S1 (granule 0)");
 	check(memcmp(sec, bas, strlen(bas)) == 0, "START.BAS payload via FDC CHS");
 
-	check(fdc_read_sector(&fdc, 17, 1, sec) == 0, "read GAT T17 S1");
-	check((sec[0] & 0xc0) == 0xc0, "GAT granule 0 is last granule");
+	check(fdc_read_sector(&fdc, 17, 2, sec) == 0, "read FAT T17 S2");
+	check((sec[0] & 0xc0) == 0xc0, "FAT granule 0 is last granule");
 
 	memset(wr, 0x5a, sizeof(wr));
 	sdc_fdc_write(&fdc, &fs, 0x09, 0);
@@ -966,7 +1024,7 @@ static void test_startup_cfg_and_jvc(void) {
 
 	sdc_fdc_reset(&fdc);
 	fdc_latch_drive0(&fdc);
-	check(fdc_read_sector(&fdc, 17, 2, sec) == 0, "auto-mount directory readable");
+	check(fdc_read_sector(&fdc, 17, 3, sec) == 0, "auto-mount directory readable");
 	check(memcmp(sec, "START   BAS", 11) == 0, "auto-mounted DSK has START.BAS");
 	check(fdc_read_sector(&fdc, 0, 1, sec) == 0 && memcmp(sec, bas, strlen(bas)) == 0,
 	      "auto-mounted START.BAS payload");
@@ -1071,6 +1129,93 @@ static int decb_dskcon_read(struct sdc_fdc *f, uint8_t track, uint8_t sector,
 	return last_status == 0 ? 0 : -1;
 }
 
+/* DECB DIR (Unravelled CCA9): start T17 S3, $00 skip killed, $FF stop. */
+static int decb_dir_list(struct sdc_fdc *f, char names[][12], int maxn) {
+	int n = 0;
+	uint8_t sec[SDC_BLOCK_SIZE];
+	unsigned s, e;
+
+	for (s = 3; s <= 11; s++) {
+		if (decb_dskcon_read(f, 17, (uint8_t)s, sec) != 0) {
+			return -1;
+		}
+		for (e = 0; e < 8; e++) {
+			uint8_t *ent = sec + e * 32;
+			if (ent[0] == 0) {
+				continue;
+			}
+			if (ent[0] == 0xff) {
+				return n;
+			}
+			if (n < maxn) {
+				memcpy(names[n], ent, 11);
+				names[n][11] = 0;
+				n++;
+			}
+		}
+	}
+	return n;
+}
+
+static int dir_has(char names[][12], int n, const char *want11) {
+	int i;
+	for (i = 0; i < n; i++) {
+		if (memcmp(names[i], want11, 11) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void test_mounted_dir_empty_vs_real_layout(void) {
+	char path[PATH_MAX];
+	char names[16][12];
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	const char *bas = "10 PRINT \"START\"\r";
+	int n;
+
+	/* Old unit-test layout: names on T17 S2. Mount works; DECB DIR is empty. */
+	if (snprintf(path, sizeof(path), "%s/SKEW.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk_skewed(path, bas, strlen(bas)) != 0) {
+		check(0, "write SKEW.DSK");
+		return;
+	}
+	put_cmd(block, "M:SKEW.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: SKEW.DSK (catalog on FAT sector)");
+	check(sdc_fs_fdc_ready(&fs, 0), "skewed DSK still fdc_ok");
+	check(sdc_fs_fdc_read(&fs, 0, 17, 2, 0, sec) == 0 &&
+	      memcmp(sec, "START   BAS", 11) == 0,
+	      "host peek of T17 S2 sees START.BAS (skewed)");
+	check(sdc_fs_fdc_read(&fs, 0, 17, 3, 0, sec) == 0 && sec[0] == 0,
+	      "T17 S3 on skewed DSK is unused zeros");
+	sdc_fdc_reset(&fdc);
+	n = decb_dir_list(&fdc, names, 16);
+	check(n == 0, "DECB DIR of S2-only catalog is empty (mounted but DIR empty)");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	/* Correct layout + Studio-style $FF unused entries and several files. */
+	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
+	    write_studio_launch_dsk(path) != 0) {
+		check(0, "write Studio-style LAUNCH.DSK");
+		return;
+	}
+	put_cmd(block, "M:LAUNCH.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: Studio-style LAUNCH.DSK");
+	sdc_fdc_reset(&fdc);
+	n = decb_dir_list(&fdc, names, 16);
+	check(n == 3, "DECB DIR lists 3 Studio files");
+	check(dir_has(names, n, "START   BAS"), "DIR 0 lists START.BAS");
+	check(dir_has(names, n, "AUTOEXECBAS"), "DIR 0 lists AUTOEXEC.BAS");
+	check(dir_has(names, n, "MOVER   BIN"), "DIR 0 lists MOVER.BIN");
+	check(decb_dskcon_read(&fdc, 0, 1, sec) == 0 && memcmp(sec, "10 PRINT", 8) == 0,
+	      "RUN START.BAS payload is granule 0 / T0 S1");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+}
+
 static void test_decb_dskcon_and_glen_cfg(void) {
 	char path[PATH_MAX];
 	char cfg[PATH_MAX];
@@ -1110,7 +1255,7 @@ static void test_decb_dskcon_and_glen_cfg(void) {
 	check(sdc_fs_fdc_ready(&fs, 0), "Glen CFG sets fdc_ok on drive 0");
 
 	sdc_fdc_reset(&fdc);
-	check(decb_dskcon_read(&fdc, 17, 2, sec) == 0, "DECB DSKCON DIR sector after CFG");
+	check(decb_dskcon_read(&fdc, 17, 3, sec) == 0, "DECB DSKCON DIR sector after CFG");
 	check(memcmp(sec, "START   BAS", 11) == 0, "DECB DIR lists START.BAS");
 	check(decb_dskcon_read(&fdc, 0, 1, sec) == 0 && memcmp(sec, bas, strlen(bas)) == 0,
 	      "DECB RUN START.BAS payload via FDC");
@@ -1119,7 +1264,7 @@ static void test_decb_dskcon_and_glen_cfg(void) {
 	sdc_fdc_reset(&fdc);
 	sdc_fdc_write(&fdc, &fs, 0x00, 0xa9);
 	sdc_fdc_write(&fdc, &fs, 0x09, 17);
-	sdc_fdc_write(&fdc, &fs, 0x0a, 2);
+	sdc_fdc_write(&fdc, &fs, 0x0a, 3);
 	sdc_fdc_write(&fdc, &fs, 0x08, 0x80);
 	check(sdc_fdc_read(&fdc, &fs, 0x08) & SDC_FLP_DRQ, "16-bit path presents DRQ");
 	for (i = 0; i < SDC_BLOCK_SIZE; i += 2) {
@@ -1155,7 +1300,7 @@ static void test_decb_dskcon_and_glen_cfg(void) {
 	check(sdc_fs_fdc_ready(&fs_space, 0), "spaces in sdc-root still fdc_ok");
 	{
 		uint8_t dirsec[SDC_BLOCK_SIZE];
-		check(sdc_fs_fdc_read(&fs_space, 0, 17, 2, 0, dirsec) == 0 &&
+		check(sdc_fs_fdc_read(&fs_space, 0, 17, 3, 0, dirsec) == 0 &&
 		      memcmp(dirsec, "START   BAS", 11) == 0,
 		      "directory sector readable from spaced sdc-root");
 	}
@@ -1222,6 +1367,7 @@ int main(void) {
 	test_dsk_mount_and_fdc();
 	test_startup_cfg_and_jvc();
 	test_decb_dskcon_and_glen_cfg();
+	test_mounted_dir_empty_vs_real_layout();
 	test_no_root();
 
 	sdc_fs_free(&fs);
@@ -1231,6 +1377,6 @@ int main(void) {
 		fprintf(stderr, "%d/%d check(s) failed\n", nfail, ncheck);
 		return 1;
 	}
-	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg/DECB DSKCON)\n", ncheck);
+	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg/DECB DSKCON/DIR layout)\n", ncheck);
 	return 0;
 }

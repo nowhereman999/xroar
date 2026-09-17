@@ -98,8 +98,15 @@ After `SDC-DOS 1.75 CC3 OK`, `DIR` lists `START.BAS` (and peers) without
 `DRIVE`, and `RUN"START"` must not return `?NE` / `?IO`.
 
 If `STARTUP.CFG` is missing, `DIR` is `?IO ERROR` (not an empty listing).
-An empty `DIR` + `?NE` on the previous tip was DECB treating an instant
+An empty `DIR` + `?NE` on an earlier tip was DECB treating an instant
 NOTREADY NMI as success (`ANDA #$7C` hides bit 7) with a zero buffer.
+
+A later miss: **mounted** (`DRIVE` shows `0: ON LAUNCH.DSK`) but `DIR 0`
+prints nothing then `OK`.  Disk BASIC `DIR` starts at **track 17 sector 3**
+(FAT is sector 2; `$00` = killed, `$FF` = end).  A host dump that scans all
+of track 17, or looks at sector 2, can show `START.BAS` while DECB lists
+nothing.  `-v 2` / `-debug-fdc` logs `FDC read T17 S3 "START   BAS"`;
+if S3 is empty and S2 looks like a catalog, that is a **WARNING**.
 
 ## Example `-sdc-root` layout
 
@@ -215,9 +222,12 @@ spaces and quotes; `#` comments and a UTF-8 BOM are ignored.  A failed
 `STARTUP.CFG` is logged at default verbosity and is not an error.
 
 This is what SDC-DOS needs for `RUN"START"` at boot: Disk BASIC `RUN`
-and `LOAD` look at the **mounted floppy** (DECB directory on track 17),
-not at loose FAT files.  `DIR` with no arguments is the same — no image
-mounted → `?IO ERROR` on real hardware and here (not an empty `OK`).
+and `LOAD` look at the **mounted floppy** (DECB directory on track 17
+**sectors 3–11**; FAT on sector 2), not at loose FAT files.  `DIR` with
+no arguments is the same — no image mounted → `?IO ERROR` on real
+hardware and here (not an empty `OK`).  Image mounted but catalog on
+sector 2 only → empty `DIR` then `OK` (DECB never reads that sector as
+a directory).
 
 Studio may stage `GAME.DSK` + `startup.cfg` under `-sdc-root`, or you can
 type `DRIVE 0,"GAME.DSK"` once SDC-DOS is up (`DRIVE` is SDC-DOS’s `M:`).
@@ -248,10 +258,12 @@ that path was Phase B.
 ## SDC-DOS floppy vs later
 
 Host tests cover Phases A–D plus FDC DSKCON-style restore/read/write on a
-synthetic 35-track DECB DSK, `M:` vs `m:`, JVC header skip,
-`STARTUP.CFG` auto-mount (including Glen’s `0=LAUNCH.DSK\r\n` bytes and an
-`sdc-root` path with spaces), DECB’s NMI/`ANDA #$7C` sector loop, and
-16-bit `$FF4A`/`$FF4B` FDC data.  Verifiable on Linux CI without a Mac, a
+synthetic 35-track DECB DSK (FAT T17 S2, directory T17 S3–S11), `M:` vs
+`m:`, JVC header skip, `STARTUP.CFG` auto-mount (including Glen’s
+`0=LAUNCH.DSK\r\n` bytes and an `sdc-root` path with spaces), DECB’s
+NMI/`ANDA #$7C` sector loop, 16-bit `$FF4A`/`$FF4B` FDC data, a
+Studio-style multi-file `LAUNCH.DSK`, and a **mounted-but-DIR-empty**
+case (catalog only on S2).  Verifiable on Linux CI without a Mac, a
 CoCo ROM, or an emulator binary.
 
 | In this tip | Still not done |
@@ -287,7 +299,8 @@ dir pages, CWD, sequential LSN write/read, mkdir/delete, `$90/$91`
 multi-sector stream, `$D0` abort, Play `OpenSDC_File_X` + interleaved
 512-byte words, **`M:` DSK FDC DSKCON-style LOAD**, `m:` vs `M:`, JVC
 header skip, `STARTUP.CFG` auto-mount, Glen `0=LAUNCH.DSK\r\n`, spaced
-sdc-root, DECB NMI sector loop, 16-bit FDC data).
+sdc-root, DECB NMI sector loop, 16-bit FDC data, DECB DIR T17 S3 vs
+skewed S2 catalog).
 
 After `./configure`, the same programs are `make -C src check` (`TESTS`).
 GitHub Actions workflow `.github/workflows/cocosdc-host.yml` runs the
