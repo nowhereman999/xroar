@@ -21,80 +21,42 @@ open/stream/abort contract against that stream (not DAC audio, not Studio
 Run).  This tip adds **FDC floppy-emulation** for SDC-DOS Disk BASIC on a
 mounted `M:` image, plus MCU-style `STARTUP.CFG` auto-mount.
 
-**Live SDC-DOS FDC read/write of mounted `LAUNCH.DSK` is still open.**  Glen
-confirmed tip `5b20b429` did not fix Mac `DIR`/`SAVE`.  See
-[Codex handoff / open bug](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk).
+## SDC-DOS mounted-image fix (2026-09-17)
 
-## Codex handoff / open bug (SDC-DOS FDC vs mounted LAUNCH.DSK)
+The blank `DIR` and successful-looking `SAVE` reported at `7778b0d3`
+were caused by **command-mode sector dispatch**, not the FDC transfer loop.
+The live SDC-DOS 1.75 CC3 trace issues `$82` reads and `$A2` writes. The
+old dispatcher masked only the drive bit and accepted `$80/$81` and
+`$A0/$A1`; `$82/$A2` fell through to a success response with no disk I/O.
+Consequently `DSKINI0` and `SAVE"HEY"` appeared to succeed without changing
+the mounted host image, and `DIR` displayed an empty buffer.
 
-Handed to Codex.  **Do not treat host-test green as live-fixed.**  Stay on
-`cursor/cocosdc-startup-cfg-fdc-12c0`; do not merge `main`.
+The dispatcher now accepts the single-sided LSN flag on both drives
+(`$82/$83`, `$A2/$A3`) and the byte-transfer flag on reads (`$84–$87`).
+Single-sided LSN addressing skips side 1 when the image is double-sided.
+These flags follow the [CoCo SDC User Guide, page 31](https://www.macmess.org/downloads/CoCo%20SDC%20User%20Guide.pdf).
+Unsupported top-level commands return failure, and sector writes report
+host flush/sync failures instead of silently returning success. Writes beyond
+the end of a disk image fail without resizing it; raw FileAccess files remain
+extensible. JVC mounts reject unsupported sector geometry.
 
-### Status
+The former handoff correctly warned that host-test success alone was
+insufficient: its tests exercised the FDC and `$80/$A0`, but missed the
+actual SDC-DOS commands. Keep both the host regression suite and the
+ROM integration test below. The integration test uses disposable images
+and the user's own ROMs; it must never format a real game or work disk.
 
-- Tip **`cursor/cocosdc-startup-cfg-fdc-12c0` @ `5b20b429`** is what Glen
-  rebuilt (`~/xroar` on that SHA).
-- Live **SDC-DOS 1.75 CC3** (green XRoar screen, 2026-09-17) still:
-  - `DRIVE 0,"LAUNCH.DSK"` → `OK`
-  - `DIR` → blank catalog, then `OK`
-  - `DSKINI0` → `68 GRANULES AVAILABLE` `OK`
-  - `SAVE"HEY"` → `OK`
-  - `DIR` still blank
-  - Autotype padding shows `:RUN"START"` on the same screen.
-- Host **`LAUNCH.DSK` after that session** (mtime ~**2026-09-17 09:20**):
-  still Studio-packed DISK1 layout
-  - T17 S1 zeros, S2 FAT, S3 `START.BAS` + `AUTOEXEC.BAS` + `MOVER.BIN` +
-    `CC3X0` + `COMP0000`–`3`
-  - **no `HEY` / `HEY.BAS` anywhere in the file bytes**
-  - `START.BAS` still at offset **78848**
-  - Not a freshly formatted disk
+Verified on macOS with SDC-DOS 1.75 CC3: 108/108 ROM checks across raw,
+JVC, and VDK images; 348 filesystem/protocol checks and 23 injected host
+I/O failure checks. The original executable fails the ROM regression.
+A copy of Studio's actual `LAUNCH.DSK` also lists all eight packed files.
 
-### Studio side (already done — not the open bug)
-
-Tip **`cursor/cocosdc-run-fallback-ccbf` @ `5160773d`**: `LAUNCH.DSK` uses
-the same `RsdosDisk::new()` as DISK1 (FAT T17 S2, directory T17 S3).
-Autotype pads `:RUN"START"` for POLCAT.  Packing matches DISK1; the host
-catalog has `START.BAS`.  That is not why `DIR` is blank.
-
-### What this tip already tried
-
-- `STARTUP.CFG` `0=` **`M:`** FDC auto-mount, floppy geometry, Type II
-  status bits (no fake empty `DIR` from unmounted NOTREADY NMI; Type II
-  complete status 0 not TRACK0/`$04`)
-- DECB DIR sector notes (catalog is T17 **S3–S11**, not S2)
-- Seek/Restore **no instant INTRQ/NMI** (claimed VCC-like; DECB polls
-  `!BUSY`)
-- Write-track `$F4` fills 18 sectors with `$FF` in the mounted `M:` `FILE*`
-  (`fflush`+`fsync`)
-- Host tests (**220 checks**) asserting DIR after mount of a DISK1-layout
-  DSK, write then independent `fopen` read-back, Seek-must-not-NMI, DSKINI
-  persist
-
-**Those host tests are insufficient.**  They call `sdc_fdc_*` directly (no
-6809, no P2/SCS, no HALT, no SDC-DOS DSKCON).  Glen’s live SDC-DOS still
-sees an empty `DIR` and `SAVE"HEY"` does not mutate host `LAUNCH.DSK`.
-
-### Open bug for Codex (XRoar CoCoSDC FDC)
-
-SDC-DOS FDC path vs the **real mounted `M:` `LAUNCH.DSK`** under `-sdc-root`:
-
-1. **`DIR` must list host T17 S3 files** (`START.BAS` is present on the host
-   image at offset 78848).
-2. **`DSKINI0` + `SAVE"HEY"` + exit must leave `HEY.BAS` on that same host
-   file.**
-
-Today: commands return `OK`; directory empty; host file unchanged.
-
-### Hypotheses for Codex (non-binding — verify)
-
-- Wrong image/`FILE*` backing vs the `-sdc-root` path Glen mounted
-- Type II data register / DRQ stream not transferring 256 bytes into CoCo
-  RAM (`DBUF` stays empty; DIR/SAVE still report status 0)
-- Writes buffered / not flushed to the host file Glen inspected
-- Seek/NMI fix incomplete vs **real SDC-DOS 1.75 DSKCON** (not stock DECB
-  Unravelled, not the host-test loop)
-- Side / density / `$FF40` latch vs command mode
-- `DIR` using a different drive than the one `DRIVE 0,"LAUNCH.DSK"` mounted
+Studio's existing disk packing remains appropriate: FAT on track 17
+sector 2, directory on sectors 3–11, and `STARTUP.CFG` mounting `LAUNCH.DSK`.
+The CoCoSDC path writes the mounted file directly; `-no-disk-write-back`
+controls XRoar's separate floppy-image subsystem, not CoCoSDC writes.
+Studio regenerates its build-time `sdc-root` on Run, so keep personal work
+images in a separate persistent `-sdc-root` directory.
 
 ## Enable the cartridge
 
@@ -138,18 +100,14 @@ xroar -cart help
 
 You should see `cocosdc`.
 
-## Glen: fetch this tip and rebuild
+## Glen: rebuild the local checkout
 
-Live SDC-DOS on this SHA still has blank `DIR` / no host `SAVE` — see
-[Codex handoff / open bug](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk)
-before treating a rebuild as a fix.
+Rebuild `src/xroar` after updating the source. Restart an already running
+XRoar process to use the new binary.
 
 From the repo root (not `src/`):
 
 ```text
-git fetch origin
-git checkout cursor/cocosdc-startup-cfg-fdc-12c0
-git pull origin cursor/cocosdc-startup-cfg-fdc-12c0
 ./configure --without-gtk2 --without-gtk3 --with-sdl2 && make
 ```
 
@@ -173,17 +131,12 @@ Quoted `-sdc-root` is fine (Google Drive spaces).  Default log level prints
 `SD card root:` and `STARTUP.CFG … drive 0: … (FDC)`.  A failed `0=` mount
 is a **WARNING** on stderr.  `-v 2` or `-debug-fdc -1` logs each FDC command.
 
-**Open on live SDC-DOS 1.75 (Glen, `5b20b429`):** after `DRIVE 0,"LAUNCH.DSK"`,
-`DIR` is still blank, `DSKINI0`/`SAVE"HEY"` still `OK`, host `LAUNCH.DSK`
-still has no `HEY.BAS`.  That is the Codex handoff, not a passing smoke.
-
-If `STARTUP.CFG` is missing, `DIR` should be `?IO ERROR` (not an empty
-listing).  An empty `DIR` + `?NE` on an earlier tip was DECB treating an
-instant NOTREADY NMI as success (`ANDA #$7C` hides bit 7) with a zero
-buffer.  Disk BASIC `DIR` starts at **track 17 sector 3** (FAT is sector 2).
-Studio packing (T17 S1 zeros, S2 FAT, S3 catalog) matches DISK1 and is not
-the open bug.  `-v 2` / `-debug-fdc` logs `FDC read T17 S3 "START   BAS"`
-when the FDC buffer actually holds the catalog.
+Use `-v 2` to see command-mode sector read/write opcodes and failures.
+SDC-DOS normally accesses a mounted image through `$82/$A2`; the FDC
+trace applies to software using the floppy-controller registers instead.
+With no image mounted, disk operations should fail rather than report
+success with an empty transfer. Disk BASIC reads its catalog from track
+17 sector 3, not sector 2 (the FAT).
 
 ## Example `-sdc-root` layout
 
@@ -258,8 +211,8 @@ Command-mode behaviour:
 | `SDCReset` program-mode handshake | `$1C` | **Implemented** — `'P'/'M'` in `$FF49/$FF4A` |
 | Mount raw file / eject | `$E0/$E1` `m:` / `M:` | **Implemented** — 256-byte `"m:path"` / `"M:path"` / `"M:"`; missing path → `FAILED\|$10`.  **`M:`** is a disk image (JVC/VDK header, FDC).  **`m:`** is raw 256-byte blocks (FileAccess/stream; **no FDC**) |
 | Create+mount raw file | `$E0/$E1` `n:` / `N:` | **Implemented** — creates if missing; `N:` with B=X=0 pre-sizes a 630-sector DSK (FDC-capable) |
-| Write logical block | `$A0/$A1` | **Implemented** — 256 bytes at LSN×256 in the mounted file |
-| Read logical block | `$80/$81` | **Implemented** — 256-byte payload; last partial sector is zero-padded |
+| Write logical block | `$A0–$A3` | **Implemented** — 256 bytes at LSN×256 in the mounted file |
+| Read logical block | `$80–$87` | **Implemented** — 256-byte payload; last partial sector is zero-padded |
 | Get info for mounted file | `$C0/$C1` + `'I'` | **Implemented** — 32-byte directory record (size **LSB first** at 28–31) |
 | Directory page | `$C0` + `'>'` | **Implemented** — 16×16-byte records (size **MSB first** at 12–15).  First `L:pattern` (`$E0`) |
 | Current directory | `$C0` + `'C'` | **Implemented** — leaf 8.3 name.  Volume root sets bits 4+7 (`FAILED\|$10`) as in the User Guide |
@@ -273,7 +226,7 @@ Command-mode behaviour:
 
 Files mounted with `m:` / `n:` are a raw array of 256-byte blocks (the
 FileAccess model).  **`M:` / `N:`** mount a floppy or hard-disk image:
-JVC (1–4 byte) and VDK (`dk` + header size) prefixes are skipped for LSN
+JVC (1–4 byte, 18 sectors/track, 256-byte sectors) and VDK (`dk` + header size) prefixes are skipped for LSN
 and FDC access; SDF (`SDF1`) is rejected.  Headerless files must be a
 multiple of 256 bytes and at least 82944 bytes (User Guide DSK minimum).
 Geometry is 18 sectors/track; more than 720 sectors (and ≤ 2880) is
@@ -299,7 +252,7 @@ spaces and quotes; `#` comments and a UTF-8 BOM are ignored.  A failed
 `STARTUP.CFG` is logged at default verbosity and is not an error.
 
 This is what SDC-DOS needs for `RUN"START"` at boot: Disk BASIC `RUN`
-and `LOAD` look at the **mounted floppy** (DECB directory on track 17
+and `LOAD` look at the **mounted disk image** (DECB directory on track 17
 **sectors 3–11**; FAT on sector 2), not at loose FAT files.  `DIR` with
 no arguments is the same — no image mounted → `?IO ERROR` on real
 hardware and here (not an empty `OK`).  Image mounted but catalog on
@@ -313,7 +266,7 @@ type `DRIVE 0,"GAME.DSK"` once SDC-DOS is up (`DRIVE` is SDC-DOS’s `M:`).
 
 | What is on `-sdc-root` | What works |
 | --- | --- |
-| `START.DSK` (DECB image containing `START.BAS`) + `startup.cfg` `0=START.DSK` | **`RUN"START"`** / `LOAD` / `LOADM` via FDC |
+| `START.DSK` (DECB image containing `START.BAS`) + `startup.cfg` `0=START.DSK` | **`RUN"START"`** / `LOAD` / `LOADM` via SDC-DOS sector commands |
 | `DRIVE 0,"START.DSK"` then `RUN"START"` | Same, after the mount |
 | Loose `START.BAS` / `MOVER.BIN` in the FAT | **Not** Disk BASIC `RUN"START"`.  Real SDC-DOS `RUN` does not load a FAT file.  Use `DIR -` / `DIR "START.BAS"` to *list* FAT; Studio FileAccess `m:` still reads those files.  Put them inside a `.DSK` (or mount one) for `RUN`/`LOADM`. |
 
@@ -345,18 +298,18 @@ independent fopen read-back** (HEY.BAS on T17 S3), DSKINI write-track
 persist, and Seek-with-`nmi_enable` must not INTRQ (the “status OK / zero
 DIR / no host mutation” regression).  Verifiable on Linux CI without a Mac,
 a CoCo ROM, or an emulator binary.  **Green host tests did not predict
-Glen’s live SDC-DOS** — see
-[Codex handoff](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk).
+Glen’s live SDC-DOS**: it used `$82/$A2`, which are now covered directly
+alongside the ROM integration test.
 
 | In this tip | Still not done |
 | --- | --- |
 | `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | SDF / DMK copy-protection tracks |
-| VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | Studio **Run** media integration (wire CoCo BASIC Studio to XRoar) |
+| VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | |
 | Mount/eject `$E0/$E1` `m:`/`n:` raw and **`M:`/`N:` disk images** (JVC/VDK header) | Mount-next / disk-set (`+` / `#`) |
-| LSN `$80/$81` `$A0/$A1` (256 bytes; header skipped on `M:`) | Remaining User Guide extras not used by Studio or SDC-DOS DSKCON |
+| LSN `$80–$87` `$A0–$A3` (256 bytes; header skipped on `M:`) | Remaining User Guide extras not used by Studio or SDC-DOS DSKCON |
 | Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Audible Play through the emulator sound path |
 | `$90/$91` 512-byte **stream**; Play interleaved refill; `$D0` abort-on-write | Zippster `.CSM` media-player menu |
-| **FDC** restore/seek/read/write sector + write-track format + HALT/NMI (host-test DSKCON; **live SDC-DOS DIR/SAVE still open**) | Live FDC vs mounted `LAUNCH.DSK` ([handoff](#codex-handoff--open-bug-sdc-dos-fdc-vs-mounted-launchdsk)) |
+| **FDC** restore/seek/read/write sector + write-track format + HALT/NMI (host-test DSKCON) | Cycle-accurate floppy-controller timing |
 | **`STARTUP.CFG`** `0=`/`1=`/`D=` auto-mount on attach and hard reset | |
 
 `$9X` bit 1 (8-bit transfers via `$FF4B` only, `$92`/`$93`) is decoded.
@@ -388,6 +341,25 @@ write-track persist, Seek-must-not-NMI).
 After `./configure`, the same programs are `make -C src check` (`TESTS`).
 GitHub Actions workflow `.github/workflows/cocosdc-host.yml` runs the
 script on push.
+
+### SDC-DOS ROM integration test
+
+Use a built emulator and your own headerless CoCo 3 and SDC-DOS ROMs:
+
+```sh
+python3 tools/run-cocosdc-rom-tests.py --xroar src/xroar \
+  --coco-rom "$HOME/Library/XRoar/roms/coco3.rom" \
+  --sdc-rom "$HOME/Library/XRoar/roms/sdcdos.rom"
+```
+
+The test boots the actual ROMs with XRoar's null UI, types BASIC commands,
+and captures RAM at a completion trap. It checks the directory and FAT in
+the host file independently, then launches fresh emulator processes to
+reload the saved data. Coverage includes `DIR`, `LOAD`/`RUN`, `SAVE`,
+`SAVEM`/`LOADM`, `DSKINI0`, and eject/remount. Each run creates private test
+images; `--output` optionally selects an empty directory for the logs,
+screen text, RAM captures, and images. Repeat with `--image-header jvc` or
+`--image-header vdk` to test supported headers. ROMs are not included in this repo.
 
 ## macOS build
 
@@ -683,8 +655,8 @@ are available later:
    - StreamFile / BIGLOADM: `m:` mount then `$90` — 512-byte sectors with
      READY between them; `$D0` or `$FF40=0` aborts without hanging.
    - SDC-DOS: `STARTUP.CFG` `0=GAME.DSK` (DECB image with `START.BAS`) then
-     `RUN"START"` / `LOADM"MOVER.BIN"` — FDC, not loose FAT.  `DIR` with no
+     `RUN"START"` / `LOADM"MOVER.BIN"` — mounted disk image, not loose FAT.  `DIR` with no
      arguments lists the mounted floppy; `DIR -` lists the SD FAT.
 
-Studio **Run** (launching media from CoCo BASIC Studio into this XRoar)
-is still later work.  A Zippster `.CSM` menu is not on this branch.
+Studio **Run** stages `LAUNCH.DSK` and `STARTUP.CFG` under its build
+folder and launches this cartridge. A Zippster `.CSM` menu is not on this branch.

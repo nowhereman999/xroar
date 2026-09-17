@@ -419,10 +419,14 @@ static void cocosdc_log_completed(struct cocosdc *sdc) {
 		cocosdc_log_payload(sdc);
 		break;
 	case 0xa0:
+	case 0xa2:
 		LOG_MOD_DEBUG(2, "cocosdc", "write LSN $%02X%s\n", sdc->hw.cmd,
 			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;
 	case 0x80:
+	case 0x82:
+	case 0x84:
+	case 0x86:
 		LOG_MOD_DEBUG(2, "cocosdc", "read LSN $%02X%s\n", sdc->hw.cmd,
 			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;

@@ -701,10 +701,20 @@ static int slot_probe_image(struct sdc_slot *s, int raw) {
 			if (n < header) {
 				return SDC_ERR_INVALID;
 			}
+			/* This controller exposes 18 sectors of 256 bytes per
+			 * track. Reject incompatible JVC geometry rather than
+			 * mounting it and silently addressing the wrong bytes. */
+			if (hdr[0] != SDC_FLOPPY_SPT ||
+			    (header >= 3 && hdr[2] != 1) ||
+			    (header >= 2 && hdr[1] != 1 && hdr[1] != 2)) {
+				return SDC_ERR_INVALID;
+			}
 			s->type = SDC_DTYPE_JVC;
+			/* JVC's omitted side-count byte defaults to one, even
+			 * when an 80-track image exceeds the raw-size heuristic. */
+			sides_known = 1;
 			if (header >= 2) {
 				sides = hdr[1];
-				sides_known = 1;
 			}
 		} else {
 			return SDC_ERR_INVALID;
@@ -1234,6 +1244,9 @@ static void cmd_read(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		sdc_hw_fail(hw, SDC_ERR_MISC);
 		return;
 	}
+	/* $8x bit 2 selects byte reads through $FF4B. Bit 1 is the
+	 * independent single-sided LSN flag already handled above. */
+	hw->stream_8bit = (hw->cmd & 0x04) != 0;
 	sdc_hw_start_rx(hw);
 }
 
@@ -1250,6 +1263,13 @@ static void cmd_write(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		sdc_hw_fail(hw, 0);
 		return;
 	}
+	/* Mounted images have fixed geometry. Raw FileAccess mounts may grow
+	 * by appending logical blocks, but an invalid disk LSN must not resize
+	 * the image (and change how its geometry is inferred next time). */
+	if (s->type != SDC_DTYPE_RAW && off + SDC_BLOCK_SIZE > slot_size(s)) {
+		sdc_hw_fail(hw, 0);
+		return;
+	}
 	if (fseek(s->fp, (long)off, SEEK_SET) != 0) {
 		sdc_hw_fail(hw, SDC_ERR_MISC);
 		return;
@@ -1258,8 +1278,10 @@ static void cmd_write(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		sdc_hw_fail(hw, SDC_ERR_MISC);
 		return;
 	}
-	fflush(s->fp);
-	(void)fsync(fileno(s->fp));
+	if (fflush(s->fp) != 0 || fsync(fileno(s->fp)) != 0) {
+		sdc_hw_fail(hw, SDC_ERR_MISC);
+		return;
+	}
 	sdc_hw_succeed(hw);
 }
 
@@ -1345,9 +1367,13 @@ void sdc_fs_execute(struct sdc_fs *fs, struct sdc_hw *hw) {
 		cmd_extd(fs, hw, drive);
 		break;
 	case 0xa0:
+	case 0xa2: /* single-sided logical sector numbering */
 		cmd_write(fs, hw, drive);
 		break;
 	case 0x80:
+	case 0x82: /* single-sided logical sector numbering */
+	case 0x84: /* byte reads through $FF4B */
+	case 0x86: /* both flags */
 		cmd_read(fs, hw, drive);
 		break;
 	case 0x90:
@@ -1360,7 +1386,8 @@ void sdc_fs_execute(struct sdc_fs *fs, struct sdc_hw *hw) {
 		sdc_hw_succeed(hw);
 		break;
 	default:
-		sdc_hw_succeed(hw);
+		/* Never report successful I/O for an unsupported opcode. */
+		sdc_hw_fail(hw, SDC_ERR_INVALID);
 		break;
 	}
 }
@@ -1491,8 +1518,9 @@ static int fdc_xfer(struct sdc_fs *fs, unsigned drive, unsigned track,
 		if (fwrite(buf, 1, SDC_BLOCK_SIZE, s->fp) != SDC_BLOCK_SIZE) {
 			return SDC_FDC_IO;
 		}
-		fflush(s->fp);
-		(void)fsync(fileno(s->fp));
+		if (fflush(s->fp) != 0 || fsync(fileno(s->fp)) != 0) {
+			return SDC_FDC_IO;
+		}
 	} else {
 		size_t n = fread(buf, 1, SDC_BLOCK_SIZE, s->fp);
 		if (n < SDC_BLOCK_SIZE) {

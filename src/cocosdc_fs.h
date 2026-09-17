@@ -7,8 +7,8 @@
  *
  *  - $E0/$E1  M:/m: mount, N:/n: create+mount, M: eject; also D:/L:/K:/X:
  *  - $C0/$C1  'I' info, '>' dir page, 'C' CWD, 'V' version (builtin)
- *  - $80/$81  read logical sector (256 bytes at LSN*256, after image header)
- *  - $A0/$A1  write logical sector
+ *  - $80-$87  read logical sector (bit 1: single-sided LSN; bit 2: byte port)
+ *  - $A0-$A3  write logical sector (bit 1: single-sided LSN)
  *  - $90/$91  stream 512-byte sectors from LSN*512 until EOF or $D0
  *             (Play / StreamFile / BIGLOADM; $D0 aborts in the register layer)
  *

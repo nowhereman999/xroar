@@ -609,7 +609,7 @@ endif
 # No SDL, ROMs, or CoCo program.  `make check` runs them after ./configure;
 # ./tools/run-cocosdc-tests.sh works without autotools.
 
-check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test
+check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test cocosdc_io_error_test
 TESTS = $(check_PROGRAMS)
 
 cocosdc_hw_test_SOURCES = $(top_srcdir)/tools/cocosdc_hw_test.c
@@ -621,3 +621,8 @@ cocosdc_fs_test_SOURCES = $(top_srcdir)/tools/cocosdc_fs_test.c cocosdc_fs.c coc
 cocosdc_fs_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
 cocosdc_fs_test_CFLAGS = -std=c11 -Wall
 cocosdc_fs_test_LDADD =
+
+cocosdc_io_error_test_SOURCES = $(top_srcdir)/tools/cocosdc_io_error_test.c
+cocosdc_io_error_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+cocosdc_io_error_test_CFLAGS = -std=c11 -Wall
+cocosdc_io_error_test_LDADD =

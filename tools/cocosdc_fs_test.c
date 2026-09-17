@@ -1485,6 +1485,166 @@ static void test_decb_dskcon_and_glen_cfg(void) {
 	sdc_fs_free(&fs_space);
 }
 
+/* The ROM uses $82/$A2, not just the unflagged CommSDC examples. These
+ * tests check both slots and host bytes, so successful no-ops cannot pass. */
+static int host_fingerprint(const char *path, uint64_t *hash, unsigned *size) {
+	uint8_t block[4096];
+	FILE *fp = fopen(path, "rb");
+	if (!fp) return -1;
+	*hash = UINT64_C(14695981039346656037);
+	*size = 0;
+	for (;;) {
+		size_t n = fread(block, 1, sizeof(block), fp);
+		for (size_t i = 0; i < n; i++) {
+			*hash ^= block[i];
+			*hash *= UINT64_C(1099511628211);
+		}
+		*size += (unsigned)n;
+		if (n < sizeof(block)) break;
+	}
+	int rc = ferror(fp) ? -1 : 0;
+	fclose(fp);
+	return rc;
+}
+
+static void test_lsn_command_variants(void) {
+	uint8_t block[SDC_BLOCK_SIZE], payload[SDC_BLOCK_SIZE], actual[SDC_BLOCK_SIZE];
+	char path[PATH_MAX], name[32], command[40];
+	unsigned geometry, drive;
+
+	for (geometry = 0; geometry < 3; geometry++) {
+		unsigned header = geometry == 0 ? 0 : geometry == 1 ? 2 : 1;
+		unsigned sectors = geometry == 0 ? 630 : geometry == 1 ? 1260 : 1440;
+		unsigned physical = geometry == 1 ? 36 : 18;
+		unsigned size = header + sectors * SDC_BLOCK_SIZE;
+		uint8_t *image = malloc(size);
+		if (!check(image != NULL, "allocate LSN variant disk")) return;
+		for (drive = 0; drive < 2; drive++) {
+			memset(image, 0, size);
+			if (header) image[0] = 18;
+			if (header == 2) image[1] = 2;
+			for (unsigned sector = 0; sector < sectors; sector++) {
+				memset(image + header + sector * SDC_BLOCK_SIZE,
+				       (uint8_t)(sector ^ (drive * 0x80)), SDC_BLOCK_SIZE);
+			}
+			snprintf(name, sizeof(name), "VAR%u%u.DSK", geometry, drive);
+			snprintf(path, sizeof(path), "%s/%s", root_path, name);
+			check(write_file(path, image, size) == 0, "create LSN variant disk");
+			snprintf(command, sizeof(command), "M:%s", name);
+			put_cmd(block, command);
+			check(comm_sdc((uint8_t)(0xe0 | drive), 0, 0, block, 1) == 0,
+			      "mount LSN variant disk in requested slot");
+			check(fs.slot[drive].sides == (geometry == 1 ? 2 : 1),
+			      "single/double-sided and one-byte JVC geometry");
+		}
+		free(image);
+
+		for (drive = 0; drive < 2; drive++) {
+			uint8_t read_cmd = (uint8_t)(0x82 | drive);
+			uint8_t write_cmd = (uint8_t)(0xa2 | drive);
+			memset(payload, (uint8_t)(physical ^ (drive * 0x80)), sizeof(payload));
+			memset(block, 0xEE, sizeof(block));
+			check(comm_sdc(read_cmd, 0, 18, block, 1) == 0 &&
+			      memcmp(block, payload, sizeof(block)) == 0,
+			      "$82/$83 read complete sector with single-sided LSN translation");
+			for (unsigned i = 0; i < sizeof(payload); i++)
+				payload[i] = (uint8_t)(i * 17 + drive * 31 + geometry * 7);
+			check(comm_sdc(write_cmd, 0, 18, payload, 1) == 0,
+			      "$A2/$A3 accepts complete sector");
+			memset(block, 0xEE, sizeof(block));
+			check(comm_sdc(read_cmd, 0, 18, block, 1) == 0 &&
+			      memcmp(block, payload, sizeof(block)) == 0,
+			      "$A2/$A3 data reads back through $82/$83");
+
+			snprintf(path, sizeof(path), "%s/VAR%u%u.DSK", root_path, geometry, drive);
+			FILE *fp = fopen(path, "rb");
+			int persisted = fp && fseek(fp, (long)(header + physical * SDC_BLOCK_SIZE), SEEK_SET) == 0 &&
+				fread(actual, 1, sizeof(actual), fp) == sizeof(actual) &&
+				memcmp(actual, payload, sizeof(actual)) == 0;
+			check(persisted, "$A2/$A3 persists exact bytes at physical host offset");
+			if (fp) {
+				if (geometry == 1) {
+					check(fseek(fp, header + 18 * SDC_BLOCK_SIZE, SEEK_SET) == 0 &&
+					      fread(actual, 1, sizeof(actual), fp) == sizeof(actual) &&
+					      actual[0] == (uint8_t)(18 ^ (drive * 0x80)) &&
+					      actual[255] == actual[0],
+					      "single-sided LSN write does not overwrite side 1 of prior track");
+				}
+				fclose(fp);
+			}
+
+			/* $84/$85: physical LSN. $86/$87: translated LSN. Both
+			 * consume exactly 256 FF4B reads; FF4A is not a data port. */
+			for (unsigned single = 0; single < 2; single++) {
+				unsigned lsn = single ? 18 : physical;
+				sdc_hw_write(&hw, 0, SDC_CMDMODE);
+				sdc_hw_write(&hw, 9, 0);
+				sdc_hw_write(&hw, 10, (uint8_t)(lsn >> 8));
+				sdc_hw_write(&hw, 11, (uint8_t)lsn);
+				sdc_hw_write(&hw, 8, (uint8_t)(0x84 | (single << 1) | drive));
+				pump();
+				check(wait_for_it() == 1, "$84-$87 provides READY data");
+				int port_ok = 1;
+				for (unsigned i = 0; i < sizeof(block); i++) {
+					unsigned before = hw.xfer_index;
+					(void)sdc_hw_read(&hw, 10);
+					port_ok &= hw.xfer_index == before;
+					block[i] = sdc_hw_read(&hw, 11);
+				}
+				check(port_ok && memcmp(block, payload, sizeof(block)) == 0,
+				      "$84-$87 byte port preserves all sector bytes and ignores FF4A reads");
+				check(sdc_hw_read(&hw, 8) == 0, "byte sector completes on final byte");
+				leave_cmd();
+			}
+			memset(block, 0, sizeof(block));
+			check(comm_sdc(read_cmd, 0, 18, block, 1) == 0 &&
+			      memcmp(block, payload, sizeof(block)) == 0,
+			      "word transfer restored after byte-mode command");
+			check(comm_sdc(read_cmd, 0, (uint16_t)sectors, block, 1) != 0 &&
+			      (last_status & SDC_FAILED),
+			      "$82/$83 beyond the mounted image reports failure");
+			uint64_t before_hash, after_hash;
+			unsigned before_size, after_size;
+			int before_ok = host_fingerprint(path, &before_hash, &before_size) == 0;
+			check(comm_sdc(write_cmd, 0, (uint16_t)sectors, payload, 1) != 0 &&
+			      (last_status & SDC_FAILED),
+			      "$A2/$A3 beyond the mounted image reports failure");
+			check(before_ok && host_fingerprint(path, &after_hash, &after_size) == 0 &&
+			      before_hash == after_hash && before_size == after_size && after_size == size,
+			      "rejected disk write preserves every host byte and image length");
+		}
+		put_cmd(block, "M:");
+		check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject variant drive 0");
+		check(comm_sdc(0xe1, 0, 0, block, 1) == 0, "eject variant drive 1");
+	}
+	check(comm_sdc(0x82, 0, 18, block, 1) != 0, "$82 with no mounted disk fails");
+	check(comm_sdc(0x83, 0, 18, block, 1) != 0, "$83 with no mounted disk fails");
+	check(comm_sdc(0xa2, 0, 18, block, 1) != 0, "$A2 with no mounted disk fails");
+	check(comm_sdc(0xa3, 0, 18, block, 1) != 0, "$A3 with no mounted disk fails");
+	check(comm_sdc(0x88, 0, 0, block, 1) != 0 && (last_status & SDC_FAILED),
+	      "unsupported read opcode fails instead of fake success");
+	check(comm_sdc(0xa4, 0, 0, block, 1) != 0 && (last_status & SDC_FAILED),
+	      "unsupported write opcode fails instead of discarding data successfully");
+}
+
+static void test_invalid_jvc_geometry(void) {
+	static const uint8_t bad[][3] = {{17, 1, 1}, {18, 0, 1}, {18, 3, 1}, {18, 1, 2}};
+	unsigned size = 3 + DECB_DSK_BYTES;
+	uint8_t *image = calloc(1, size);
+	uint8_t block[SDC_BLOCK_SIZE];
+	char path[PATH_MAX];
+	if (!check(image != NULL, "allocate invalid JVC fixture")) return;
+	snprintf(path, sizeof(path), "%s/BADGEOM.DSK", root_path);
+	for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		memcpy(image, bad[i], sizeof(bad[i]));
+		check(write_file(path, image, size) == 0, "write unsupported JVC geometry");
+		put_cmd(block, "M:BADGEOM.DSK");
+		check(comm_sdc(0xe0, 0, 0, block, 1) != 0 && failed_bits(SDC_ERR_INVALID),
+		      "unsupported JVC sectors/sides/sector-size rejected");
+	}
+	free(image);
+}
+
 int main(void) {
 	char tmpl[] = "/tmp/cocosdc-fs-XXXXXX";
 	char path[PATH_MAX];
@@ -1547,6 +1707,8 @@ int main(void) {
 	test_decb_dskcon_and_glen_cfg();
 	test_mounted_dir_empty_vs_real_layout();
 	test_fdc_host_persist_and_ok_empty_dir();
+	test_lsn_command_variants();
+	test_invalid_jvc_geometry();
 	test_no_root();
 
 	sdc_fs_free(&fs);
