@@ -138,6 +138,7 @@ xroar_SOURCES += \
 	idecart.c idecart.h \
 	cocosdc.c cocosdc_hw.h \
 	cocosdc_fs.c cocosdc_fs.h \
+	cocosdc_fdc.c cocosdc_fdc.h \
 	mooh.c \
 	mpi.c \
 	nx32.c \
@@ -283,6 +284,11 @@ xroar_CFLAGS += $(GL_CFLAGS)
 xroar_LDADD += $(GL_LIBS)
 xroar_SOURCES += \
 	vo_opengl.c vo_opengl.h
+if DARWIN
+# Apple OpenGL headers are deprecated; must be defined before those headers.
+xroar_CFLAGS += -DGL_SILENCE_DEPRECATION
+xroar_OBJCFLAGS += -DGL_SILENCE_DEPRECATION
+endif
 endif
 
 # GTK+ 3 user interface
@@ -608,7 +614,7 @@ endif
 # No SDL, ROMs, or CoCo program.  `make check` runs them after ./configure;
 # ./tools/run-cocosdc-tests.sh works without autotools.
 
-check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test
+check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test cocosdc_io_error_test
 TESTS = $(check_PROGRAMS)
 
 cocosdc_hw_test_SOURCES = $(top_srcdir)/tools/cocosdc_hw_test.c
@@ -616,7 +622,12 @@ cocosdc_hw_test_CPPFLAGS = -I$(top_srcdir)/src
 cocosdc_hw_test_CFLAGS = -std=c11 -Wall
 cocosdc_hw_test_LDADD =
 
-cocosdc_fs_test_SOURCES = $(top_srcdir)/tools/cocosdc_fs_test.c cocosdc_fs.c
+cocosdc_fs_test_SOURCES = $(top_srcdir)/tools/cocosdc_fs_test.c cocosdc_fs.c cocosdc_fdc.c
 cocosdc_fs_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
 cocosdc_fs_test_CFLAGS = -std=c11 -Wall
 cocosdc_fs_test_LDADD =
+
+cocosdc_io_error_test_SOURCES = $(top_srcdir)/tools/cocosdc_io_error_test.c
+cocosdc_io_error_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+cocosdc_io_error_test_CFLAGS = -std=c11 -Wall
+cocosdc_io_error_test_LDADD =

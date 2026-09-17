@@ -85,7 +85,7 @@ struct sdc_hw {
 	/* Stream ($90/$91): keep BUSY across 512-byte sectors; after each
 	 * sector cmd_ready asks the cart to refill or finish (EOF). */
 	bool streaming;
-	bool stream_8bit; /* $9X bit 1: 8-bit via $FF4B only */
+	bool stream_8bit; /* $9X bit 1 / $8X bit 2: 8-bit RX via $FF4B only */
 	/* Set when a command finishes (BUSY cleared).  The cart logs then
 	 * clears this. */
 	bool completed;

@@ -1,8 +1,9 @@
-# CoCoSDC in this XRoar fork (Phase D)
+# CoCoSDC in this XRoar fork (SDC-DOS floppy)
 
 This fork adds a Dragon/CoCo cartridge type `cocosdc` so Studio’s CoCoSDC
 client libraries can talk to a host folder on a Mac (or any Unix host)
-without a physical CoCoSDC.
+without a physical CoCoSDC, and so **SDC-DOS Disk BASIC** can
+`DRIVE` / `LOAD` / `RUN` / `LOADM` a mounted `.DSK` under `-sdc-root`.
 
 It is **not** a VCC `SDC.dll` port.  The register contract is the one used by
 Studio’s `CommSDC` (`SDC_Comm.asm`): `$FF40` control latch, `$FF48`
@@ -17,7 +18,45 @@ Phase A was register plumbing only (VERSION, reset handshake, bit-5 command
 *ack*).  Phase B maps FileAccess commands onto `-sdc-root`.  Phase C adds
 the 512-byte stream path those loaders use.  Phase D is Play’s
 open/stream/abort contract against that stream (not DAC audio, not Studio
-Run).
+Run).  This tip adds **FDC floppy-emulation** for SDC-DOS Disk BASIC on a
+mounted `M:` image, plus MCU-style `STARTUP.CFG` auto-mount.
+
+## SDC-DOS mounted-image fix (2026-09-17)
+
+The blank `DIR` and successful-looking `SAVE` reported at `7778b0d3`
+were caused by **command-mode sector dispatch**, not the FDC transfer loop.
+The live SDC-DOS 1.75 CC3 trace issues `$82` reads and `$A2` writes. The
+old dispatcher masked only the drive bit and accepted `$80/$81` and
+`$A0/$A1`; `$82/$A2` fell through to a success response with no disk I/O.
+Consequently `DSKINI0` and `SAVE"HEY"` appeared to succeed without changing
+the mounted host image, and `DIR` displayed an empty buffer.
+
+The dispatcher now accepts the single-sided LSN flag on both drives
+(`$82/$83`, `$A2/$A3`) and the byte-transfer flag on reads (`$84–$87`).
+Single-sided LSN addressing skips side 1 when the image is double-sided.
+These flags follow the [CoCo SDC User Guide, page 31](https://www.macmess.org/downloads/CoCo%20SDC%20User%20Guide.pdf).
+Unsupported top-level commands return failure, and sector writes report
+host flush/sync failures instead of silently returning success. Writes beyond
+the end of a disk image fail without resizing it; raw FileAccess files remain
+extensible. JVC mounts reject unsupported sector geometry.
+
+The former handoff correctly warned that host-test success alone was
+insufficient: its tests exercised the FDC and `$80/$A0`, but missed the
+actual SDC-DOS commands. Keep both the host regression suite and the
+ROM integration test below. The integration test uses disposable images
+and the user's own ROMs; it must never format a real game or work disk.
+
+Verified on macOS with SDC-DOS 1.75 CC3: 108/108 ROM checks across raw,
+JVC, and VDK images; 348 filesystem/protocol checks and 23 injected host
+I/O failure checks. The original executable fails the ROM regression.
+A copy of Studio's actual `LAUNCH.DSK` also lists all eight packed files.
+
+Studio's existing disk packing remains appropriate: FAT on track 17
+sector 2, directory on sectors 3–11, and `STARTUP.CFG` mounting `LAUNCH.DSK`.
+The CoCoSDC path writes the mounted file directly; `-no-disk-write-back`
+controls XRoar's separate floppy-image subsystem, not CoCoSDC writes.
+Studio regenerates its build-time `sdc-root` on Run, so keep personal work
+images in a separate persistent `-sdc-root` directory.
 
 ## Enable the cartridge
 
@@ -61,6 +100,44 @@ xroar -cart help
 
 You should see `cocosdc`.
 
+## Glen: rebuild the local checkout
+
+Rebuild `src/xroar` after updating the source. Restart an already running
+XRoar process to use the new binary.
+
+From the repo root (not `src/`):
+
+```text
+./configure --without-gtk2 --without-gtk3 --with-sdl2 && make
+```
+
+`make` from the root still tries `doc/xroar.info` if `makeinfo` is missing;
+`src/xroar` is already linked.  On Mac, `--with-sdl2` is Cocoa/`macosx` (the
+working 1.12.1-style video path).  Optional: `make -C src` skips the info
+manual.  Host tests (no ROM): `./tools/run-cocosdc-tests.sh`.
+
+SDC-DOS smoke (Glen’s Studio argv shape: DECB `.DSK` + `STARTUP.CFG` `0=….DSK`,
+**not** a loose FAT `START.BAS`):
+
+```text
+# sdc-root contains STARTUP.CFG (bytes `0=LAUNCH.DSK\r\n`) and LAUNCH.DSK
+src/xroar -machine coco3 -ram 2048 -cart cocosdc \
+  -cart-rom ~/Library/XRoar/roms/sdcdos.rom \
+  -sdc-root "/path/to/sdc-root" \
+  -type 'RUN"START"\r' -no-disk-writeback
+```
+
+Quoted `-sdc-root` is fine (Google Drive spaces).  Default log level prints
+`SD card root:` and `STARTUP.CFG … drive 0: … (FDC)`.  A failed `0=` mount
+is a **WARNING** on stderr.  `-v 2` or `-debug-fdc -1` logs each FDC command.
+
+Use `-v 2` to see command-mode sector read/write opcodes and failures.
+SDC-DOS normally accesses a mounted image through `$82/$A2`; the FDC
+trace applies to software using the floppy-controller registers instead.
+With no image mounted, disk operations should fail rather than report
+success with an empty transfer. Disk BASIC reads its catalog from track
+17 sector 3, not sector 2 (the FAT).
+
 ## Example `-sdc-root` layout
 
 Treat the directory as the SD volume root.  Names are matched
@@ -69,7 +146,9 @@ directory (`D:` / `'C'`).  A leading `/` is absolute from the volume root.
 
 ```text
 ~/sdc-root/
-  HELLO.TXT          raw file for m: / n: (LSN N = byte offset N*256)
+  STARTUP.CFG          0=GAME.DSK   (MCU auto-mount at attach / hard reset)
+  GAME.DSK             DECB image with START.BAS / MOVER.BIN
+  HELLO.TXT            raw file for m: / n: (LSN N = byte offset N*256)
   NEWFILE.BIN
   GAMES/
     FOO.BIN
@@ -83,7 +162,7 @@ src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -v 2
 
 `-v 2` logs VERSION, mount, dir, LSN, and stream commands.
 
-## What Phase D implements
+## What this cart implements
 
 Hardware, as used by `CommSDC`:
 
@@ -125,15 +204,15 @@ Command-mode behaviour:
 
 ### CommSDC ops
 
-| Client use | Command | Phase D |
+| Client use | Command | This tip |
 | --- | --- | --- |
 | Enter/leave command mode, poll status | `$FF40` / `$FF48` | **Implemented** |
 | `CheckSDCFirmwareVersion` (`$C0`, `'V'`) | `$C0` + P1=`$56` | **Implemented** — BCD **1.27** (`$0127`) in `$FF4A/$FF4B` |
 | `SDCReset` program-mode handshake | `$1C` | **Implemented** — `'P'/'M'` in `$FF49/$FF4A` |
-| Mount raw file / eject | `$E0/$E1` `m:` / `M:` | **Implemented** — 256-byte `"m:path"` / `"M:"`; missing path → `FAILED\|$10` |
-| Create+mount raw file | `$E0/$E1` `n:` / `N:` | **Implemented** — creates if missing; `N:` with B=X=0 pre-sizes a 630-sector DSK |
-| Write logical block | `$A0/$A1` | **Implemented** — 256 bytes at LSN×256 in the mounted file |
-| Read logical block | `$80/$81` | **Implemented** — 256-byte payload; last partial sector is zero-padded |
+| Mount raw file / eject | `$E0/$E1` `m:` / `M:` | **Implemented** — 256-byte `"m:path"` / `"M:path"` / `"M:"`; missing path → `FAILED\|$10`.  **`M:`** is a disk image (JVC/VDK header, FDC).  **`m:`** is raw 256-byte blocks (FileAccess/stream; **no FDC**) |
+| Create+mount raw file | `$E0/$E1` `n:` / `N:` | **Implemented** — creates if missing; `N:` with B=X=0 pre-sizes a 630-sector DSK (FDC-capable) |
+| Write logical block | `$A0–$A3` | **Implemented** — 256 bytes at LSN×256 in the mounted file |
+| Read logical block | `$80–$87` | **Implemented** — 256-byte payload; last partial sector is zero-padded |
 | Get info for mounted file | `$C0/$C1` + `'I'` | **Implemented** — 32-byte directory record (size **LSB first** at 28–31) |
 | Directory page | `$C0` + `'>'` | **Implemented** — 16×16-byte records (size **MSB first** at 12–15).  First `L:pattern` (`$E0`) |
 | Current directory | `$C0` + `'C'` | **Implemented** — leaf 8.3 name.  Volume root sets bits 4+7 (`FAILED\|$10`) as in the User Guide |
@@ -142,12 +221,54 @@ Command-mode behaviour:
 | Abort stream | `$D0` or `$FF40=0` | **Implemented** — `$D0` is Not Busy in the `$FF48` write (Play BREAK); `CLR $FF40` also aborts |
 | Play DAC / analog mux (`$FF20`) | | **Not in host tests** — register/stream contract only; 44750 Hz playback needs a live emulator |
 | CSM media-player menu / extra opcodes | | **Not used by Studio Play/FileAccess** (`.CSM` is a file format that also streams with `$90`) |
-| Floppy-emulation mode (non-`$43` latch) | | **Not emulated** — Play/FileAccess only write `$00` to leave command mode; latch is stored, `$FF48` reads 0 |
+| Floppy-emulation mode (non-`$43` latch) | | **Implemented** — WD1773-ish restore/seek/read/write sector on an `M:`/`N:` image.  Type I completes `!BUSY` **without** INTRQ (DECB polls status after Seek; an instant NMI with `$FF40` bit 5 on returns empty `DIR` + `SAVE` that never hits the host file).  Unmounted or `m:` raw Type II stays `BUSY\|NOTREADY` **without** INTRQ so DECB’s DRQ poll times out (`?IO ERROR`).  Type II complete status is 0 (not Type I `TRACK0`/`$04`).  Write-track (`$F0`/`$F4`, DSKINI) fills that track’s 18 sectors with `$FF` in the same host `FILE*`.  `$FF40` bit 5 gates INTRQ→NMI; bit 7 is HALT (never asserted mid-sector).  While DRQ is set, `$FF4A` and `$FF4B` both supply data (`LDU $FF4A`).  SDF / copy-protection not emulated |
+| `$FF43` flash bank probe | | **Stub** — returns bank 0 (enough for SDC-DOS to see an SDC) |
 
 Files mounted with `m:` / `n:` are a raw array of 256-byte blocks (the
-FileAccess model).  `M:` / `N:` mount the same way for LSN access (no JVC /
-VDK / SDF header parse in this phase).  Two slots (`$E0` / `$E1`); the same
-host file cannot be mounted in both (`FAILED\|$20`).
+FileAccess model).  **`M:` / `N:`** mount a floppy or hard-disk image:
+JVC (1–4 byte, 18 sectors/track, 256-byte sectors) and VDK (`dk` + header size) prefixes are skipped for LSN
+and FDC access; SDF (`SDF1`) is rejected.  Headerless files must be a
+multiple of 256 bytes and at least 82944 bytes (User Guide DSK minimum).
+Geometry is 18 sectors/track; more than 720 sectors (and ≤ 2880) is
+treated as double-sided; more than 2880 is a hard disk (FDC sees the
+first 1440 as SS 80-track).  Two slots (`$E0` / `$E1`); the same host
+file cannot be mounted in both (`FAILED\|$20`).
+
+### STARTUP.CFG (MCU auto-mount)
+
+On `-sdc-root` attach and on **hard** reset the cart reads `STARTUP.CFG`
+from the volume root (case-insensitive), matching the real Atmega:
+
+```text
+0=GAME.DSK
+1=UTILS.DSK
+D=/GAMES
+```
+
+`0=` / `1=` are `M:` disk-image mounts (so FDC/Disk BASIC work).  `D=`
+sets the SD current directory.  Lines are `key=path` with optional
+spaces and quotes; `#` comments and a UTF-8 BOM are ignored.  A failed
+`0=`/`1=` mount is a warning (`STARTUP.CFG … mount failed`).  Missing
+`STARTUP.CFG` is logged at default verbosity and is not an error.
+
+This is what SDC-DOS needs for `RUN"START"` at boot: Disk BASIC `RUN`
+and `LOAD` look at the **mounted disk image** (DECB directory on track 17
+**sectors 3–11**; FAT on sector 2), not at loose FAT files.  `DIR` with
+no arguments is the same — no image mounted → `?IO ERROR` on real
+hardware and here (not an empty `OK`).  Image mounted but catalog on
+sector 2 only → empty `DIR` then `OK` (DECB never reads that sector as
+a directory).
+
+Studio may stage `GAME.DSK` + `startup.cfg` under `-sdc-root`, or you can
+type `DRIVE 0,"GAME.DSK"` once SDC-DOS is up (`DRIVE` is SDC-DOS’s `M:`).
+
+### Loose FAT files vs Disk BASIC `RUN"START"`
+
+| What is on `-sdc-root` | What works |
+| --- | --- |
+| `START.DSK` (DECB image containing `START.BAS`) + `startup.cfg` `0=START.DSK` | **`RUN"START"`** / `LOAD` / `LOADM` via SDC-DOS sector commands |
+| `DRIVE 0,"START.DSK"` then `RUN"START"` | Same, after the mount |
+| Loose `START.BAS` / `MOVER.BIN` in the FAT | **Not** Disk BASIC `RUN"START"`.  Real SDC-DOS `RUN` does not load a FAT file.  Use `DIR -` / `DIR "START.BAS"` to *list* FAT; Studio FileAccess `m:` still reads those files.  Put them inside a `.DSK` (or mount one) for `RUN`/`LOADM`. |
 
 A missing `-sdc-root`, or a path that does not exist, fails the command
 cleanly — CommSDC does not hang.
@@ -164,27 +285,32 @@ StreamFile’s `POLLREADY` assumes the mount succeeded.
 `SDC_LoadmSavem.asm` uses FileAccess byte I/O (`$80`/`$A0`), not stream —
 that path was Phase B.
 
-## Phase D vs later (Studio Run / Mac Play smoke)
+## SDC-DOS floppy vs later
 
-**Phase D is done** when the host tests below pass.  That includes Phases
-A–C plus Play’s open/stream/abort against a mounted file under a temp
-`sdc-root` (16-bit `$FF4A` words, interleaved 512-byte loads, `$D0` BREAK
-without a BUSY poll, `CLR $FF40`).  Verifiable on Linux CI without a Mac,
-a CoCo, or an emulator binary.
+Host tests cover Phases A–D plus FDC DSKCON-style restore/read/write on a
+synthetic 35-track DECB DSK (FAT T17 S2, directory T17 S3–S11), `M:` vs
+`m:`, JVC header skip, `STARTUP.CFG` auto-mount (including Glen’s
+`0=LAUNCH.DSK\r\n` bytes and an `sdc-root` path with spaces), DECB’s
+NMI/`ANDA #$7C` sector loop **including Seek $17**, 16-bit `$FF4A`/`$FF4B`
+FDC data, a Studio-style multi-file `LAUNCH.DSK`, a **mounted-but-DIR-empty**
+case (catalog only on S2), **host-file read-back after mount**, **write then
+independent fopen read-back** (HEY.BAS on T17 S3), DSKINI write-track
+persist, and Seek-with-`nmi_enable` must not INTRQ (the “status OK / zero
+DIR / no host mutation” regression).  Verifiable on Linux CI without a Mac,
+a CoCo ROM, or an emulator binary.  **Green host tests did not predict
+Glen’s live SDC-DOS**: it used `$82/$A2`, which are now covered directly
+alongside the ROM integration test.
 
-Full 44750 Hz Play audio cannot be proven here: `SDC_Play.asm` clocks
-samples to the CoCo DAC (`$FF20`) with cycle-counted delays.  Host tests
-check the register/stream contract only.
-
-| In Phase D (this branch) | Still not done |
+| In this tip | Still not done |
 | --- | --- |
-| `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | Floppy-emulation latch (WD-style non-`$43` `$FF40`) — **not required** by Studio Play/FileAccess (they only `CLR $FF40` to leave command mode) |
-| VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | Studio **Run** media integration (wire CoCo BASIC Studio to XRoar) |
-| Mount/eject `$E0/$E1` `m:`/`n:`/`M:` against `-sdc-root` | JVC/VDK/SDF header parse; FDC floppy image geometry |
-| LSN `$80/$81` `$A0/$A1` (256 bytes at LSN×256) | Mount-next / disk-set (`+` / `#`) |
-| Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Remaining User Guide extras not used by the Studio libraries |
-| `$90/$91` 512-byte **stream** from LSN×512; Play interleaved refill; `$D0` abort-on-write | Audible Play through the emulator sound path (Mac smoke with `SDC_Play.asm`) |
-| | Zippster `.CSM` media-player menu (not a Studio library opcode) |
+| `$FF40`/`$FF48–$FF4B` CommSDC wait-loop | SDF / DMK copy-protection tracks |
+| VERSION `$C0` `'V'` (BCD 1.27), `$1C` `PM` | |
+| Mount/eject `$E0/$E1` `m:`/`n:` raw and **`M:`/`N:` disk images** (JVC/VDK header) | Mount-next / disk-set (`+` / `#`) |
+| LSN `$80–$87` `$A0–$A3` (256 bytes; header skipped on `M:`) | Remaining User Guide extras not used by Studio or SDC-DOS DSKCON |
+| Info / dir page / CWD (`'I'` / `'>'` / `'C'`, plus `L:`/`D:`/`K:`/`X:`) | Audible Play through the emulator sound path |
+| `$90/$91` 512-byte **stream**; Play interleaved refill; `$D0` abort-on-write | Zippster `.CSM` media-player menu |
+| **FDC** restore/seek/read/write sector + write-track format + HALT/NMI (host-test DSKCON) | Cycle-accurate floppy-controller timing |
+| **`STARTUP.CFG`** `0=`/`1=`/`D=` auto-mount on attach and hard reset | |
 
 `$9X` bit 1 (8-bit transfers via `$FF4B` only, `$92`/`$93`) is decoded.
 Studio BIGLOADM / StreamFile / Play use 16-bit `$90`/`$91` (`LDD` /
@@ -202,14 +328,38 @@ No SDL, autotools, ROMs, or CoCo required:
 
 That compiles `tools/cocosdc_hw_test.c` (wait-loop, LSN latch, 256-byte RX,
 512-byte stream-sector READY/BUSY, Play `$D0` abort-on-write) and
-`tools/cocosdc_fs_test.c` + `src/cocosdc_fs.c` against a `mkdtemp` sdc-root
-(mount, missing-path `FAILED|$10`, both slots, in-use, dir pages, CWD,
-sequential LSN write/read, mkdir/delete, `$90/$91` multi-sector stream,
-`$D0` abort, Play `OpenSDC_File_X` + interleaved 512-byte words).
+`tools/cocosdc_fs_test.c` + `src/cocosdc_fs.c` + `src/cocosdc_fdc.c` against
+a `mkdtemp` sdc-root (mount, missing-path `FAILED|$10`, both slots, in-use,
+dir pages, CWD, sequential LSN write/read, mkdir/delete, `$90/$91`
+multi-sector stream, `$D0` abort, Play `OpenSDC_File_X` + interleaved
+512-byte words, **`M:` DSK FDC DSKCON-style LOAD**, `m:` vs `M:`, JVC
+header skip, `STARTUP.CFG` auto-mount, Glen `0=LAUNCH.DSK\r\n`, spaced
+sdc-root, DECB NMI sector loop including Seek, 16-bit FDC data, DECB DIR T17 S3 vs
+skewed S2 catalog, host-file write then independent read-back, DSKINI
+write-track persist, Seek-must-not-NMI).
 
 After `./configure`, the same programs are `make -C src check` (`TESTS`).
 GitHub Actions workflow `.github/workflows/cocosdc-host.yml` runs the
 script on push.
+
+### SDC-DOS ROM integration test
+
+Use a built emulator and your own headerless CoCo 3 and SDC-DOS ROMs:
+
+```sh
+python3 tools/run-cocosdc-rom-tests.py --xroar src/xroar \
+  --coco-rom "$HOME/Library/XRoar/roms/coco3.rom" \
+  --sdc-rom "$HOME/Library/XRoar/roms/sdcdos.rom"
+```
+
+The test boots the actual ROMs with XRoar's null UI, types BASIC commands,
+and captures RAM at a completion trap. It checks the directory and FAT in
+the host file independently, then launches fresh emulator processes to
+reload the saved data. Coverage includes `DIR`, `LOAD`/`RUN`, `SAVE`,
+`SAVEM`/`LOADM`, `DSKINI0`, and eject/remount. Each run creates private test
+images; `--output` optionally selects an empty directory for the logs,
+screen text, RAM captures, and images. Repeat with `--image-header jvc` or
+`--image-header vdk` to test supported headers. ROMs are not included in this repo.
 
 ## macOS build
 
@@ -424,6 +574,28 @@ a NULL texture), not a ROM dump and not a CoCoSDC regression.
 4. **Upstream 1.13 SDL3 tag without cocosdc** uses the same `vo_sdl3.c`
    as this tip’s parent `main`.  Prefer brew 1.12.1 as the working A/B.
 
+### Top scanline / top strip (Glen, 2026-09-17)
+
+Not a GIME “bad first framebuffer line.”  Two different things show up as a
+top strip:
+
+1. **Playfield, stuck solid full-width row while the map scrolls.**  Default
+   NTSC 60Hz picture is 200 lines centred on the 192-line active area, so
+   about **four GIME top-border scanlines** stay on screen.  Hardware border
+   does not move with HVEN/VRAM.  Solid orange/yellow across both playfield
+   halves is border colour, not a tile row.  View → Picture Area → Zoomed
+   (512×384) crops that border; it is not a vo off-by-one.
+2. **BASIC `OK` green screen: thin dark/blue/white fringe at the top of the
+   picture against the black letterbox.**  Mixed subpixel colours are
+   scaler/compositor AA (NTSC 60Hz forces LINEAR because 480 % 200 ≠ 0),
+   not a palette scanline.  GIME would paint a full-width green or black
+   line.  `vo_sdl2` (Cocoa) is unchanged vs `main`; this tip’s Darwin SDL3
+   path prefers OpenGL but does not write that fringe into the buffer.
+
+GIME `set_active_area` y is `lTB+3` in **vo_render** scanline space
+(`vo_vsync` on FS *rising*, four lines after FS falling).  Host tests do
+not cover this.  No GIME/vo first-line code change on this tip.
+
 The emulator binary is `src/xroar`.  Optional: `sudo make install`
 (default prefix `/usr/local`).
 
@@ -483,9 +655,9 @@ also pass `--enable-ui-sdl`.  Video works with `-ui macosx`.  `config.h`
 will have `HAVE_SDL2` and typically `HAVE_COCOA`; `WANT_UI_SDL` stays
 undefined.  That is expected.  Still never `-ui sdl2`.
 
-### Optional Mac / CoCo smoke (not required for Phase D)
+### Optional Mac / CoCo smoke (SDC-DOS + Play)
 
-Phase D acceptance is the Linux host tests.  When a Mac and CoCo program
+Linux host tests are the CI gate.  When a Mac and CoCo program are available:
 are available later:
 
 1. `mkdir -p ~/sdc-root` and put a small file there, e.g. `HELLO.TXT`.
@@ -504,12 +676,9 @@ are available later:
    - `$E0` `"L:*.*"` then `$C0`+`'>'` returns a directory page (does not hang).
    - StreamFile / BIGLOADM: `m:` mount then `$90` — 512-byte sectors with
      READY between them; `$D0` or `$FF40=0` aborts without hanging.
-   - Play (`SDC_Play.asm`): `m:` + `OpenSDC_File_X_At_Start` on a raw PCM
-     file under `-sdc-root` (ffmpeg u8 44750 Hz as in the Play comments);
-     BREAK should abort (`$D0`); end of file should return without hang.
-     **Audible** 44750 Hz output through `$FF20` is this Mac smoke — host
-     tests do not exercise the emulator sound path.
+   - SDC-DOS: `STARTUP.CFG` `0=GAME.DSK` (DECB image with `START.BAS`) then
+     `RUN"START"` / `LOADM"MOVER.BIN"` — mounted disk image, not loose FAT.  `DIR` with no
+     arguments lists the mounted floppy; `DIR -` lists the SD FAT.
 
-Studio **Run** (launching media from CoCo BASIC Studio into this XRoar)
-is still later work.  Do not expect floppy-latch FDC behaviour or a
-Zippster `.CSM` menu on this branch.
+Studio **Run** stages `LAUNCH.DSK` and `STARTUP.CFG` under its build
+folder and launches this cartridge. A Zippster `.CSM` menu is not on this branch.

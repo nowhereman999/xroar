@@ -1,7 +1,7 @@
 name: CoCoSDC host tests
 
-# Linux CI for Phase D: register engine + temp sdc-root
-# (mount/dir/LSN/stream/Play).  Does not build XRoar or need SDL / ROMs / a CoCo.
+# Linux CI: CommSDC + temp sdc-root (mount/dir/LSN/stream/Play/FDC DSK/startup.cfg).
+# Does not build XRoar or need SDL / ROMs / a CoCo.
 
 on:
   push:

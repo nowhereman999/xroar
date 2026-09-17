@@ -7,6 +7,8 @@
  *  256-byte logical sector R/W follow SDC_FileAccess.asm.  Stream $90/$91
  *  (512-byte sectors) follows SDC_StreamFile_Library.asm / SDC_BigLoadm.asm
  *  / SDC_Play.asm (open/stream/abort; DAC timing is not in this layer).
+ *  When $FF40 is not $43, WD1773-ish FDC registers serve SDC-DOS Disk BASIC
+ *  LOAD/RUN/LOADM on an M: mounted DSK.  STARTUP.CFG auto-mounts at attach.
  *
  *  This is not a VCC SDC.dll port.
  *
@@ -37,6 +39,7 @@
 #include "xalloc.h"
 
 #include "cart.h"
+#include "cocosdc_fdc.h"
 #include "cocosdc_fs.h"
 #include "cocosdc_hw.h"
 #include "logging.h"
@@ -50,8 +53,11 @@
 struct cocosdc {
 	struct cart cart;
 	struct sdc_hw hw;
+	struct sdc_fdc fdc;
 	struct sdc_fs fs;
 	char *root;
+	uint8_t flash_data;
+	uint8_t flash_bank;
 };
 
 #define COCOSDC_SER_HW_BLOCK (10)
@@ -110,7 +116,12 @@ static void cocosdc_attach(struct cart *c);
 static void cocosdc_detach(struct cart *c);
 
 static void cocosdc_apply_root(struct cocosdc *sdc);
+static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when);
+static void cocosdc_log_fdc_dir(struct cocosdc *sdc);
+static int cocosdc_apply_startup(struct cocosdc *sdc, const char *when);
 static void cocosdc_log_completed(struct cocosdc *sdc);
+static void cocosdc_update_lines(struct cocosdc *sdc);
+static void strip_root_quotes(char *s);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -133,7 +144,7 @@ static const struct partdb_entry_funcs cocosdc_funcs = {
 const struct cart_partdb_entry cocosdc_part = {
 	.partdb_entry = {
 		.name = "cocosdc",
-		.description = "Darren Atkinson | CoCoSDC (Phase D)",
+		.description = "Darren Atkinson | CoCoSDC (SDC-DOS floppy)",
 		.funcs = &cocosdc_funcs
 	}
 };
@@ -154,6 +165,7 @@ static struct part *cocosdc_allocate(void) {
 	c->detach = cocosdc_detach;
 
 	sdc_hw_reset(&sdc->hw);
+	sdc_fdc_reset(&sdc->fdc);
 	sdc_fs_init(&sdc->fs);
 
 	return p;
@@ -180,6 +192,9 @@ static bool cocosdc_finish(struct part *p) {
 	if (!sdc->root && xroar.cfg.sdc.root) {
 		sdc->root = xstrdup(xroar.cfg.sdc.root);
 	}
+	if (sdc->root) {
+		strip_root_quotes(sdc->root);
+	}
 	cocosdc_apply_root(sdc);
 
 	return 1;
@@ -187,6 +202,7 @@ static bool cocosdc_finish(struct part *p) {
 
 static void cocosdc_free(struct part *p) {
 	struct cocosdc *sdc = (struct cocosdc *)p;
+	sdc_fs_flush(&sdc->fs);
 	sdc_fs_free(&sdc->fs);
 	free(sdc->root);
 	sdc->root = NULL;
@@ -217,7 +233,102 @@ static bool cocosdc_write_elem(void *sptr, struct ser_handle *sh, int tag) {
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static void strip_root_quotes(char *s) {
+	size_t n;
+	if (!s || s[0] == 0) {
+		return;
+	}
+	n = strlen(s);
+	if (n >= 2 && ((s[0] == '"' && s[n - 1] == '"') || (s[0] == '\'' && s[n - 1] == '\''))) {
+		memmove(s, s + 1, n - 2);
+		s[n - 2] = 0;
+	}
+}
+
+static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when) {
+	int any = 0;
+	int i;
+
+	for (i = 0; i < SDC_SLOTS; i++) {
+		if (sdc->fs.slot[i].host_path) {
+			any = 1;
+			LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG %s drive %d: %s%s\n",
+				      when, i, sdc->fs.slot[i].host_path,
+				      sdc->fs.slot[i].fdc_ok ? " (FDC)" : " (not FDC)");
+			LOG_MOD_DEBUG_FDC(LOG_FDC_EVENTS, "cocosdc",
+					  "STARTUP.CFG %s drive %d: %s fdc_ok=%d\n",
+					  when, i, sdc->fs.slot[i].host_path,
+					  sdc->fs.slot[i].fdc_ok);
+			if (!sdc->fs.slot[i].fdc_ok) {
+				LOG_MOD_WARN("cocosdc", "STARTUP.CFG %s drive %d mounted '%s' but FDC is not ready (raw m: image?)\n",
+					     when, i, sdc->fs.slot[i].host_path);
+			}
+		}
+	}
+	if (!any) {
+		if (err == 1) {
+			LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG %s: no STARTUP.CFG in %s\n",
+				      when, sdc->fs.root ? sdc->fs.root : "(no root)");
+		} else if (err) {
+			LOG_MOD_WARN("cocosdc", "STARTUP.CFG %s: 0=/1= mount failed (%s, $%02X)\n",
+				     when, sdc_fs_err_name(err), err & 0xff);
+		} else {
+			LOG_MOD_DEBUG(1, "cocosdc", "STARTUP.CFG %s: file present but no 0=/1= disk mounted\n",
+				      when);
+		}
+	}
+	fflush(stdout);
+	fflush(stderr);
+}
+
+static int fdc_printable_name(const uint8_t *b, char out[12]) {
+	unsigned i;
+	for (i = 0; i < 11; i++) {
+		if (b[i] < 32 || b[i] > 126) {
+			return 0;
+		}
+		out[i] = (char)b[i];
+	}
+	out[11] = 0;
+	return 1;
+}
+
+/* DECB DIR starts at T17 S3.  A catalog parked on S2 (the FAT) looks fine to a
+ * host hex dump of track 17 but DIR prints nothing. */
+static void cocosdc_log_fdc_dir(struct cocosdc *sdc) {
+	char name[12];
+	uint8_t fat[SDC_BLOCK_SIZE];
+	uint8_t first;
+
+	if (!sdc->fdc.drq || sdc->fdc.track != 17 || sdc->fdc.sector != 3) {
+		return;
+	}
+	if (fdc_printable_name(sdc->fdc.buf, name)) {
+		LOG_MOD_DEBUG(1, "cocosdc", "FDC DECB DIR T17 S3: \"%s\"\n", name);
+		return;
+	}
+	first = sdc->fdc.buf[0];
+	if (sdc_fs_fdc_read(&sdc->fs, sdc->fdc.drive, 17, 2, 0, fat) == 0 &&
+	    fdc_printable_name(fat, name)) {
+		LOG_MOD_WARN("cocosdc",
+			     "DECB DIR T17 S3 is empty ($%02X); T17 S2 looks like a catalog \"%s\". "
+			     "Disk BASIC lists sectors 3-11; the FAT belongs on sector 2.\n",
+			     first, name);
+	} else {
+		LOG_MOD_DEBUG(1, "cocosdc", "FDC DECB DIR T17 S3 first byte $%02X (empty catalog)\n",
+			      first);
+	}
+}
+
+static int cocosdc_apply_startup(struct cocosdc *sdc, const char *when) {
+	int err = sdc_fs_apply_startup(&sdc->fs);
+	cocosdc_log_startup(sdc, err, when);
+	return err;
+}
+
 static void cocosdc_apply_root(struct cocosdc *sdc) {
+	int err;
+
 	if (!sdc->root || !sdc->root[0]) {
 		LOG_MOD_DEBUG(1, "cocosdc", "no SD card root; use -sdc-root DIR or -cart-opt sdc-root=DIR\n");
 		return;
@@ -229,6 +340,7 @@ static void cocosdc_apply_root(struct cocosdc *sdc) {
 		sdc->root = xstrdup(expanded);
 	}
 	sdsfree(expanded);
+	strip_root_quotes(sdc->root);
 
 	struct stat st;
 	if (stat(sdc->root, &st) != 0) {
@@ -245,6 +357,13 @@ static void cocosdc_apply_root(struct cocosdc *sdc) {
 		return;
 	}
 	LOG_MOD_DEBUG(1, "cocosdc", "SD card root: %s\n", sdc->root);
+	if (sdc->fs.slot[0].host_path || sdc->fs.slot[1].host_path) {
+		err = 0;
+	} else {
+		/* Distinguish missing CFG from a failed 0= mount. */
+		err = sdc_fs_apply_startup(&sdc->fs);
+	}
+	cocosdc_log_startup(sdc, err, "attach");
 }
 
 static void cocosdc_log_payload(const struct cocosdc *sdc) {
@@ -300,10 +419,14 @@ static void cocosdc_log_completed(struct cocosdc *sdc) {
 		cocosdc_log_payload(sdc);
 		break;
 	case 0xa0:
+	case 0xa2:
 		LOG_MOD_DEBUG(2, "cocosdc", "write LSN $%02X%s\n", sdc->hw.cmd,
 			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;
 	case 0x80:
+	case 0x82:
+	case 0x84:
+	case 0x86:
 		LOG_MOD_DEBUG(2, "cocosdc", "read LSN $%02X%s\n", sdc->hw.cmd,
 			      (sdc->hw.status & SDC_FAILED) ? " FAILED" : "");
 		break;
@@ -324,25 +447,79 @@ static void cocosdc_log_completed(struct cocosdc *sdc) {
 	}
 }
 
+static void cocosdc_update_lines(struct cocosdc *sdc) {
+	struct cart *c = &sdc->cart;
+	if (sdc->hw.cmd_mode) {
+		DELEGATE_CALL(c->signal_halt, 0);
+		DELEGATE_CALL(c->signal_nmi, 0);
+		return;
+	}
+	DELEGATE_CALL(c->signal_halt, sdc_fdc_want_halt(&sdc->fdc) ? 1 : 0);
+	DELEGATE_CALL(c->signal_nmi, sdc_fdc_want_nmi(&sdc->fdc) ? 1 : 0);
+}
+
+static int cocosdc_flash_reg(uint16_t A) {
+	if ((A & 0xfff0) != 0xff40) {
+		return -1;
+	}
+	switch (A & 0x0f) {
+	case 0x02:
+	case 0x03:
+		return (int)(A & 0x0f);
+	default:
+		return -1;
+	}
+}
+
+static uint8_t cocosdc_flash_read(struct cocosdc *sdc, int reg) {
+	if (reg == 0x02) {
+		return sdc->flash_data;
+	}
+	/* SDC-DOS probes $FF43: bank in bits 0-2, last data in 3-7. */
+	return (uint8_t)((sdc->flash_bank & 0x07) | (sdc->flash_data & 0xf8));
+}
+
+static void cocosdc_flash_write(struct cocosdc *sdc, int reg, uint8_t D) {
+	if (reg == 0x02) {
+		sdc->flash_data = D;
+	} else {
+		sdc->flash_bank = (uint8_t)(D & 0x07);
+	}
+}
+
 static void cocosdc_reset(struct cart *c, bool hard) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
 	cart_rom_reset(c, hard);
 	sdc_hw_reset(&sdc->hw);
+	sdc_fdc_reset(&sdc->fdc);
 	if (hard) {
 		sdc_fs_reset(&sdc->fs);
+		(void)cocosdc_apply_startup(sdc, "hard reset");
 	}
+	cocosdc_update_lines(sdc);
 }
 
 static void cocosdc_attach(struct cart *c) {
+	struct cocosdc *sdc = (struct cocosdc *)c;
 	cart_rom_attach(c);
+	/* Finish already applied the root.  Re-apply STARTUP.CFG if a hard
+	 * reset later unmounted, or if attach races ahead of finish on some
+	 * hosts: only mount when drive 0 is empty and a root exists. */
+	if (sdc->fs.root && !sdc->fs.slot[0].host_path) {
+		(void)cocosdc_apply_startup(sdc, "cart attach");
+	}
 }
 
 static void cocosdc_detach(struct cart *c) {
+	struct cocosdc *sdc = (struct cocosdc *)c;
+	sdc_fs_flush(&sdc->fs);
 	cart_rom_detach(c);
 }
 
 static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_t D) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
+	int flash;
+	int reg;
 
 	if (R2) {
 		rombank_d8(c->ROM, A, &D);
@@ -352,20 +529,32 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 		return D;
 	}
 
-	int reg = sdc_hw_reg(A);
+	flash = cocosdc_flash_reg(A);
+	if (flash >= 0) {
+		return cocosdc_flash_read(sdc, flash);
+	}
+
+	reg = sdc_hw_reg(A);
 	if (reg < 0) {
 		return D;
 	}
-	D = sdc_hw_read(&sdc->hw, reg);
-	if (sdc->hw.cmd_ready) {
-		sdc_fs_execute(&sdc->fs, &sdc->hw);
+	if (sdc->hw.cmd_mode) {
+		D = sdc_hw_read(&sdc->hw, reg);
+		if (sdc->hw.cmd_ready) {
+			sdc_fs_execute(&sdc->fs, &sdc->hw);
+		}
+		cocosdc_log_completed(sdc);
+		return D;
 	}
-	cocosdc_log_completed(sdc);
+	D = sdc_fdc_read(&sdc->fdc, &sdc->fs, reg);
+	cocosdc_update_lines(sdc);
 	return D;
 }
 
 static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8_t D) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
+	int flash;
+	int reg;
 
 	if (R2) {
 		rombank_d8(c->ROM, A, &D);
@@ -375,15 +564,67 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 		return D;
 	}
 
-	int reg = sdc_hw_reg(A);
+	flash = cocosdc_flash_reg(A);
+	if (flash >= 0) {
+		cocosdc_flash_write(sdc, flash, D);
+		return D;
+	}
+
+	reg = sdc_hw_reg(A);
 	if (reg < 0) {
 		return D;
 	}
 
-	sdc_hw_write(&sdc->hw, reg, D);
-	if (sdc->hw.cmd_ready) {
-		sdc_fs_execute(&sdc->fs, &sdc->hw);
+	if (reg == 0x00) {
+		sdc_hw_write(&sdc->hw, reg, D);
+		if (D == SDC_CMDMODE) {
+			sdc->fdc.halt_enable = 0;
+			sdc->fdc.drq = 0;
+			sdc_fdc_set_intrq(&sdc->fdc, 0);
+			sdc->fdc.status = 0;
+		} else {
+			sdc_fdc_write(&sdc->fdc, &sdc->fs, 0x00, D);
+		}
+		cocosdc_update_lines(sdc);
+		return D;
 	}
-	cocosdc_log_completed(sdc);
+
+	if (sdc->hw.cmd_mode) {
+		sdc_hw_write(&sdc->hw, reg, D);
+		if (sdc->hw.cmd_ready) {
+			sdc_fs_execute(&sdc->fs, &sdc->hw);
+		}
+		cocosdc_log_completed(sdc);
+		return D;
+	}
+
+	if (logging.level >= 2 && reg == 0x08) {
+		LOG_MOD_DEBUG(2, "cocosdc", "FDC cmd $%02X drv=%u tr=%u se=%u side=%u nmi=%d\n",
+			      D, sdc->fdc.drive, sdc->fdc.track, sdc->fdc.sector, sdc->fdc.side,
+			      sdc->fdc.nmi_enable);
+	}
+	sdc_fdc_write(&sdc->fdc, &sdc->fs, reg, D);
+	if (reg == 0x08 && (D & 0xe0) == 0x80 && sdc->fdc.drq) {
+		char peek[12];
+		if (fdc_printable_name(sdc->fdc.buf, peek)) {
+			LOG_MOD_DEBUG(2, "cocosdc", "FDC read T%u S%u \"%s\"\n",
+				      sdc->fdc.track, sdc->fdc.sector, peek);
+		} else {
+			LOG_MOD_DEBUG(2, "cocosdc", "FDC read T%u S%u first=$%02X\n",
+				      sdc->fdc.track, sdc->fdc.sector, sdc->fdc.buf[0]);
+		}
+		cocosdc_log_fdc_dir(sdc);
+	}
+	if ((logging.level >= 2 || (logging.debug_fdc & LOG_FDC_EVENTS)) && reg == 0x08) {
+		LOG_MOD_DEBUG(2, "cocosdc", "FDC status=$%02X%s%s%s ready=%d\n", sdc->fdc.status,
+			      sdc->fdc.drq ? " DRQ" : "", sdc->fdc.intrq ? " INTRQ" : "",
+			      sdc_fdc_want_nmi(&sdc->fdc) ? " NMI" : "",
+			      sdc_fs_fdc_ready(&sdc->fs, sdc->fdc.drive));
+		LOG_MOD_DEBUG_FDC(LOG_FDC_EVENTS, "cocosdc",
+				  "FDC cmd $%02X status=$%02X fdc_ok=%d\n",
+				  D, sdc->fdc.status,
+				  sdc_fs_fdc_ready(&sdc->fs, sdc->fdc.drive));
+	}
+	cocosdc_update_lines(sdc);
 	return D;
 }

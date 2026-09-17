@@ -29,7 +29,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <AvailabilityMacros.h>
 #include <CoreAudio/AudioHardware.h>
+
+/* macOS 12 SDK renamed ElementMaster → ElementMain (same value, 0) and
+ * deprecated the old name.  Older SDKs only have Master. */
+#if !defined(MAC_OS_VERSION_12_0) || \
+    (defined(MAC_OS_X_VERSION_MAX_ALLOWED) && \
+     MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_VERSION_12_0)
+# ifndef kAudioObjectPropertyElementMain
+#  define kAudioObjectPropertyElementMain kAudioObjectPropertyElementMaster
+# endif
+#endif
 
 #include "xalloc.h"
 
@@ -91,7 +102,7 @@ static void *new(void *cfg) {
 
 	propertyAddress.mSelector = kAudioHardwarePropertyDefaultOutputDevice;
 	propertyAddress.mScope = kAudioObjectPropertyScopeGlobal;
-	propertyAddress.mElement = kAudioObjectPropertyElementMaster;
+	propertyAddress.mElement = kAudioObjectPropertyElementMain;
 
 	propertySize = sizeof(aomacosx->device);
 	if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &propertyAddress, 0, NULL, &propertySize, &aomacosx->device) != noErr) {
