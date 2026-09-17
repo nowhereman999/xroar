@@ -574,6 +574,28 @@ a NULL texture), not a ROM dump and not a CoCoSDC regression.
 4. **Upstream 1.13 SDL3 tag without cocosdc** uses the same `vo_sdl3.c`
    as this tip’s parent `main`.  Prefer brew 1.12.1 as the working A/B.
 
+### Top scanline / top strip (Glen, 2026-09-17)
+
+Not a GIME “bad first framebuffer line.”  Two different things show up as a
+top strip:
+
+1. **Playfield, stuck solid full-width row while the map scrolls.**  Default
+   NTSC 60Hz picture is 200 lines centred on the 192-line active area, so
+   about **four GIME top-border scanlines** stay on screen.  Hardware border
+   does not move with HVEN/VRAM.  Solid orange/yellow across both playfield
+   halves is border colour, not a tile row.  View → Picture Area → Zoomed
+   (512×384) crops that border; it is not a vo off-by-one.
+2. **BASIC `OK` green screen: thin dark/blue/white fringe at the top of the
+   picture against the black letterbox.**  Mixed subpixel colours are
+   scaler/compositor AA (NTSC 60Hz forces LINEAR because 480 % 200 ≠ 0),
+   not a palette scanline.  GIME would paint a full-width green or black
+   line.  `vo_sdl2` (Cocoa) is unchanged vs `main`; this tip’s Darwin SDL3
+   path prefers OpenGL but does not write that fringe into the buffer.
+
+GIME `set_active_area` y is `lTB+3` in **vo_render** scanline space
+(`vo_vsync` on FS *rising*, four lines after FS falling).  Host tests do
+not cover this.  No GIME/vo first-line code change on this tip.
+
 The emulator binary is `src/xroar`.  Optional: `sudo make install`
 (default prefix `/usr/local`).
 

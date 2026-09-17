@@ -55,8 +55,14 @@
 // macosx+ conditional here for those that want to mess about on that platform.
 // For reasons best known to themselves, Apple put OpenGL headers in a
 // completely non-standard directory.
+//
+// Apple deprecated the OpenGL headers; GL_SILENCE_DEPRECATION must be set
+// before they are included (Xcode SDK 10.14+).
 
 #if defined(__APPLE_CC__)
+# ifndef GL_SILENCE_DEPRECATION
+#  define GL_SILENCE_DEPRECATION
+# endif
 # include <OpenGL/gl.h>
 #else
 # include <GL/gl.h>

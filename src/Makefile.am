@@ -284,6 +284,11 @@ xroar_CFLAGS += $(GL_CFLAGS)
 xroar_LDADD += $(GL_LIBS)
 xroar_SOURCES += \
 	vo_opengl.c vo_opengl.h
+if DARWIN
+# Apple OpenGL headers are deprecated; must be defined before those headers.
+xroar_CFLAGS += -DGL_SILENCE_DEPRECATION
+xroar_OBJCFLAGS += -DGL_SILENCE_DEPRECATION
+endif
 endif
 
 # GTK+ 3 user interface

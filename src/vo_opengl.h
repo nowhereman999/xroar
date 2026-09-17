@@ -25,6 +25,9 @@
 #include <stdint.h>
 
 #if defined(__APPLE_CC__)
+# ifndef GL_SILENCE_DEPRECATION
+#  define GL_SILENCE_DEPRECATION
+# endif
 # include <OpenGL/gl.h>
 #else
 # include <GL/gl.h>
