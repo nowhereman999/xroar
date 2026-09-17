@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "cocosdc_fdc.h"
 #include "cocosdc_fs.h"
 #include "cocosdc_hw.h"
 
@@ -796,6 +797,234 @@ static void test_no_root(void) {
 	check(sdc_fs_set_root(&fs, root_path) == 0, "restore sdc-root");
 }
 
+/* 35-track SS DECB DSK: GAT T17 S1, directory T17 S2, START.BAS in granule 0. */
+#define DECB_DSK_BYTES (35 * 18 * 256)
+#define DECB_GAT_OFF   ((17 * 18 + 0) * 256)
+#define DECB_DIR_OFF   ((17 * 18 + 1) * 256)
+
+static int write_decb_dsk(const char *path, const char *payload, size_t pay_n) {
+	uint8_t *img;
+	uint8_t *dir;
+	size_t n = pay_n > 255 ? 255 : pay_n;
+	int rc = -1;
+
+	img = calloc(1, DECB_DSK_BYTES);
+	if (!img) {
+		return -1;
+	}
+	memset(img + DECB_GAT_OFF, 0xff, 256);
+	img[DECB_GAT_OFF + 0] = (uint8_t)(0xc0 | 1); /* granule 0 last, 1 sector */
+	dir = img + DECB_DIR_OFF;
+	memcpy(dir, "START   BAS", 11);
+	dir[11] = 0;    /* BASIC */
+	dir[12] = 0xff; /* ASCII */
+	dir[13] = 0;    /* first granule */
+	dir[14] = 0;
+	dir[15] = (uint8_t)n;
+	memcpy(img, payload, n);
+	if (write_file(path, img, DECB_DSK_BYTES) == 0) {
+		rc = 0;
+	}
+	free(img);
+	return rc;
+}
+
+static void fdc_latch_drive0(struct sdc_fdc *f) {
+	sdc_fdc_write(f, &fs, 0x00, 0xa9); /* halt + density + motor + drv0 */
+}
+
+static void fdc_restore(struct sdc_fdc *f) {
+	sdc_fdc_write(f, &fs, 0x08, 0x03);
+}
+
+static int fdc_read_sector(struct sdc_fdc *f, uint8_t track, uint8_t sector, uint8_t *buf) {
+	unsigned i;
+	uint8_t st;
+
+	sdc_fdc_write(f, &fs, 0x09, track);
+	sdc_fdc_write(f, &fs, 0x0a, sector);
+	sdc_fdc_write(f, &fs, 0x08, 0x80);
+	st = sdc_fdc_read(f, &fs, 0x08);
+	if (st & SDC_FLP_NOTREADY) {
+		last_status = st;
+		return -1;
+	}
+	if (!(st & SDC_FLP_DRQ)) {
+		last_status = st;
+		return -1;
+	}
+	for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+		buf[i] = sdc_fdc_read(f, &fs, 0x0b);
+	}
+	last_status = sdc_fdc_read(f, &fs, 0x08);
+	return 0;
+}
+
+static void test_dsk_mount_and_fdc(void) {
+	char path[PATH_MAX];
+	const char *bas = "10 PRINT \"OK\"\r";
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	uint8_t wr[SDC_BLOCK_SIZE];
+
+	if (snprintf(path, sizeof(path), "%s/START.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "write START.DSK");
+		return;
+	}
+
+	put_cmd(block, "M:HELLO.TXT");
+	check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "M: of tiny non-DSK fails");
+	check(failed_bits(SDC_ERR_INVALID), "M: HELLO.TXT FAILED|$04 invalid image");
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	fdc_restore(&fdc);
+	check(sdc_fdc_read(&fdc, &fs, 0x08) & SDC_FLP_NOTREADY,
+	      "FDC restore with nothing mounted is NOTREADY");
+
+	put_cmd(block, "m:START.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "m:START.DSK raw mount");
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(fdc_read_sector(&fdc, 17, 2, sec) != 0, "FDC read of m: raw is not ready");
+	check(last_status & SDC_FLP_NOTREADY, "m: DSK does not enable FDC");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	put_cmd(block, "M:START.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M:START.DSK disk-image mount");
+	check(sdc_fs_fdc_ready(&fs, 0), "M: sets fdc_ok on slot 0");
+
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 0, block, 1) == 0, "LSN 0 after M: is first sector");
+	check(memcmp(block, bas, strlen(bas)) == 0, "LSN 0 is START.BAS payload");
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	fdc_restore(&fdc);
+	check(fdc.track == 0, "restore sets track 0");
+	check(fdc.intrq, "restore raises INTRQ");
+	(void)sdc_fdc_read(&fdc, &fs, 0x08);
+	check(!fdc.intrq, "status read clears INTRQ");
+	check(!(last_status & SDC_FLP_NOTREADY), "restore with mounted DSK is ready");
+
+	check(fdc_read_sector(&fdc, 17, 2, sec) == 0, "DSKCON read directory T17 S2");
+	check(memcmp(sec, "START   BAS", 11) == 0, "directory entry START.BAS");
+	check(sec[12] == 0xff && sec[13] == 0, "ASCII BASIC granule 0");
+	check(sdc_fdc_want_nmi(&fdc) || !fdc.drq, "sector complete drops DRQ");
+
+	check(fdc_read_sector(&fdc, 0, 1, sec) == 0, "DSKCON read T0 S1 (granule 0)");
+	check(memcmp(sec, bas, strlen(bas)) == 0, "START.BAS payload via FDC CHS");
+
+	check(fdc_read_sector(&fdc, 17, 1, sec) == 0, "read GAT T17 S1");
+	check((sec[0] & 0xc0) == 0xc0, "GAT granule 0 is last granule");
+
+	memset(wr, 0x5a, sizeof(wr));
+	sdc_fdc_write(&fdc, &fs, 0x09, 0);
+	sdc_fdc_write(&fdc, &fs, 0x0a, 2);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0xa0);
+	check(fdc.drq, "write sector presents DRQ");
+	{
+		unsigned i;
+		for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+			sdc_fdc_write(&fdc, &fs, 0x0b, wr[i]);
+		}
+	}
+	check(fdc_read_sector(&fdc, 0, 2, sec) == 0 && sec[0] == 0x5a && sec[255] == 0x5a,
+	      "FDC write sector round-trip");
+
+	put_cmd(block, "M:");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject START.DSK");
+}
+
+static void test_startup_cfg_and_jvc(void) {
+	char path[PATH_MAX];
+	char cfg[PATH_MAX];
+	const char *bas = "10 PRINT \"CFG\"\r";
+	uint8_t *jvc;
+	uint8_t sec[SDC_BLOCK_SIZE];
+	uint8_t block[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	struct sdc_fs fs2;
+
+	if (snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "write AUTO.DSK");
+		return;
+	}
+	if (snprintf(cfg, sizeof(cfg), "%s/startup.cfg", root_path) >= (int)sizeof(cfg) ||
+	    write_file(cfg, "D=/\n0=AUTO.DSK\n", strlen("D=/\n0=AUTO.DSK\n")) != 0) {
+		check(0, "write startup.cfg");
+		return;
+	}
+
+	sdc_fs_reset(&fs);
+	check(sdc_fs_apply_startup(&fs) == 0, "apply STARTUP.CFG");
+	check(sdc_fs_fdc_ready(&fs, 0), "startup.cfg 0=AUTO.DSK auto-mounted");
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(fdc_read_sector(&fdc, 17, 2, sec) == 0, "auto-mount directory readable");
+	check(memcmp(sec, "START   BAS", 11) == 0, "auto-mounted DSK has START.BAS");
+	check(fdc_read_sector(&fdc, 0, 1, sec) == 0 && memcmp(sec, bas, strlen(bas)) == 0,
+	      "auto-mounted START.BAS payload");
+
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	jvc = malloc(2 + DECB_DSK_BYTES);
+	if (!jvc) {
+		check(0, "alloc JVC");
+		return;
+	}
+	jvc[0] = 18;
+	jvc[1] = 1;
+	if (snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path)) {
+		free(jvc);
+		check(0, "AUTO.DSK path");
+		return;
+	}
+	{
+		FILE *fp = fopen(path, "rb");
+		if (!fp || fread(jvc + 2, 1, DECB_DSK_BYTES, fp) != DECB_DSK_BYTES) {
+			if (fp) {
+				fclose(fp);
+			}
+			free(jvc);
+			check(0, "read AUTO.DSK for JVC wrap");
+			return;
+		}
+		fclose(fp);
+	}
+	if (snprintf(path, sizeof(path), "%s/JVC.DSK", root_path) >= (int)sizeof(path) ||
+	    write_file(path, jvc, 2 + DECB_DSK_BYTES) != 0) {
+		free(jvc);
+		check(0, "write JVC.DSK");
+		return;
+	}
+	free(jvc);
+
+	put_cmd(block, "M:JVC.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: JVC 2-byte header");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 0, block, 1) == 0, "LSN 0 skips JVC header");
+	check(memcmp(block, "10 PRINT", 8) == 0, "JVC LSN 0 is sector data not header");
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(fdc_read_sector(&fdc, 0, 1, sec) == 0 && memcmp(sec, "10 PRINT", 8) == 0,
+	      "FDC CHS skips JVC header");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	/* Hard-reset style: set_root reapplies startup.cfg */
+	sdc_fs_init(&fs2);
+	check(sdc_fs_set_root(&fs2, root_path) == 0, "set_root applies startup.cfg");
+	check(sdc_fs_fdc_ready(&fs2, 0), "set_root auto-mounts AUTO.DSK");
+	sdc_fs_free(&fs2);
+}
+
 int main(void) {
 	char tmpl[] = "/tmp/cocosdc-fs-XXXXXX";
 	char path[PATH_MAX];
@@ -853,6 +1082,8 @@ int main(void) {
 	test_escape();
 	test_stream();
 	test_play();
+	test_dsk_mount_and_fdc();
+	test_startup_cfg_and_jvc();
 	test_no_root();
 
 	sdc_fs_free(&fs);
@@ -862,6 +1093,6 @@ int main(void) {
 		fprintf(stderr, "%d/%d check(s) failed\n", nfail, ncheck);
 		return 1;
 	}
-	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/slots/CWD)\n", ncheck);
+	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg)\n", ncheck);
 	return 0;
 }

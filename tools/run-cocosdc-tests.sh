@@ -14,9 +14,9 @@ $cc $cflags -I"$root/src" -o "$tmp/cocosdc_hw_test" \
 	"$root/tools/cocosdc_hw_test.c"
 "$tmp/cocosdc_hw_test"
 
-echo "==> cocosdc_fs_test (mount/dir/LSN/stream/Play against temp sdc-root)"
+echo "==> cocosdc_fs_test (mount/dir/LSN/stream/Play/FDC/startup.cfg against temp sdc-root)"
 $cc $cflags -I"$root" -I"$root/src" -o "$tmp/cocosdc_fs_test" \
-	"$root/tools/cocosdc_fs_test.c" "$root/src/cocosdc_fs.c"
+	"$root/tools/cocosdc_fs_test.c" "$root/src/cocosdc_fs.c" "$root/src/cocosdc_fdc.c"
 "$tmp/cocosdc_fs_test"
 
 echo "==> crclist_match_test (NTSC Super ECB 0xb4c88d6c vs @coco3)"

@@ -61,6 +61,12 @@ static void slot_close(struct sdc_slot *s) {
 	s->host_path = NULL;
 	s->writable = 0;
 	s->attr = 0;
+	s->fdc_ok = 0;
+	s->type = SDC_DTYPE_RAW;
+	s->header = 0;
+	s->spt = SDC_FLOPPY_SPT;
+	s->sides = 1;
+	s->fdc_sectors = 0;
 	memset(s->name, ' ', 8);
 	memset(s->ext, ' ', 3);
 }
@@ -122,6 +128,7 @@ int sdc_fs_set_root(struct sdc_fs *fs, const char *host_root) {
 	if (stat(fs->root, &st) != 0 || !S_ISDIR(st.st_mode)) {
 		return -1;
 	}
+	(void)sdc_fs_apply_startup(fs);
 	return 0;
 }
 
@@ -598,6 +605,133 @@ static int file_in_use(struct sdc_fs *fs, const char *host, int except_drive) {
 	return 0;
 }
 
+static void slot_apply_floppy_geom(struct sdc_slot *s, uint32_t payload,
+				   int sides_known, uint8_t sides) {
+	uint32_t sectors = payload / SDC_BLOCK_SIZE;
+
+	s->spt = SDC_FLOPPY_SPT;
+	if (sectors > SDC_FLOPPY_MAX_SEC) {
+		s->sides = 1;
+		s->fdc_sectors = 1440;
+		return;
+	}
+	if (sides_known && (sides == 1 || sides == 2)) {
+		s->sides = sides;
+	} else {
+		s->sides = (sectors > 720) ? 2 : 1;
+	}
+	s->fdc_sectors = sectors;
+}
+
+/* M:/N: disk image: JVC/VDK header and DECB-usable geometry.  m:/n: raw. */
+static int slot_probe_image(struct sdc_slot *s, int raw) {
+	uint8_t hdr[16];
+	uint32_t sz;
+	size_t n;
+	uint32_t header = 0;
+	uint8_t sides = 1;
+	int sides_known = 0;
+
+	s->fdc_ok = 0;
+	s->type = SDC_DTYPE_RAW;
+	s->header = 0;
+	s->spt = SDC_FLOPPY_SPT;
+	s->sides = 1;
+	s->fdc_sectors = 0;
+	if (raw) {
+		return 0;
+	}
+	if (!s->fp) {
+		return SDC_ERR_MISC;
+	}
+	sz = slot_size(s);
+	if (fseek(s->fp, 0, SEEK_SET) != 0) {
+		return SDC_ERR_MISC;
+	}
+	memset(hdr, 0, sizeof(hdr));
+	n = fread(hdr, 1, 12, s->fp);
+
+	if (sz >= 219262u && n >= 4 && memcmp(hdr, "SDF1", 4) == 0) {
+		return SDC_ERR_INVALID;
+	}
+
+	if (n >= 12 && hdr[0] == 'd' && hdr[1] == 'k') {
+		uint32_t hsz = (uint32_t)hdr[2] | ((uint32_t)hdr[3] << 8);
+		if (hsz < 12 || hsz > 256 || hsz > sz) {
+			return SDC_ERR_INVALID;
+		}
+		header = hsz;
+		sides = hdr[9];
+		sides_known = 1;
+		if (hdr[10] & 0x01) {
+			s->writable = 0;
+			s->attr |= SDC_ATTR_LOCKED;
+		}
+		s->type = SDC_DTYPE_VDK;
+	} else {
+		header = sz & 255u;
+		if (header == 0) {
+			if (sz < SDC_DSK_MIN_BYTES) {
+				return SDC_ERR_INVALID;
+			}
+			s->type = SDC_DTYPE_DSK;
+		} else if (header <= 4) {
+			if (n < header) {
+				return SDC_ERR_INVALID;
+			}
+			s->type = SDC_DTYPE_JVC;
+			if (header >= 2) {
+				sides = hdr[1];
+				sides_known = 1;
+			}
+		} else {
+			return SDC_ERR_INVALID;
+		}
+	}
+
+	if (sz < header + SDC_BLOCK_SIZE) {
+		return SDC_ERR_INVALID;
+	}
+	s->header = header;
+	slot_apply_floppy_geom(s, sz - header, sides_known, sides);
+	s->fdc_ok = 1;
+	return 0;
+}
+
+static uint32_t adjust_lsn(const struct sdc_slot *s, uint32_t lsn, uint8_t cmd) {
+	uint16_t spt = s->spt ? s->spt : (uint16_t)SDC_FLOPPY_SPT;
+	if ((cmd & 0x02) && s->sides == 2 && spt) {
+		uint32_t trk = lsn / spt;
+		uint32_t sec = lsn % spt;
+		return trk * 2u * spt + sec;
+	}
+	return lsn;
+}
+
+static int chs_to_lsn(const struct sdc_slot *s, unsigned track, unsigned sector,
+		      unsigned side, uint32_t *out) {
+	unsigned sides = s->sides ? s->sides : 1u;
+	unsigned spt = s->spt ? s->spt : SDC_FLOPPY_SPT;
+	uint32_t lsn;
+
+	if (sector < 1 || sector > spt) {
+		return SDC_FDC_RNF;
+	}
+	if (side >= sides) {
+		if (sides == 1) {
+			side = 0;
+		} else {
+			return SDC_FDC_RNF;
+		}
+	}
+	lsn = (uint32_t)(track * sides + side) * spt + (sector - 1);
+	if (s->fdc_sectors && lsn >= s->fdc_sectors) {
+		return SDC_FDC_RNF;
+	}
+	*out = lsn;
+	return SDC_FDC_OK;
+}
+
 static uint32_t lsn_of(const struct sdc_hw *hw) {
 	return ((uint32_t)hw->latched_preg[0] << 16) |
 	       ((uint32_t)hw->latched_preg[1] << 8) | hw->latched_preg[2];
@@ -646,26 +780,32 @@ static void fill_dir_record(uint8_t rec[16], const char *host_name, const char *
 
 static void cmd_eject(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 	slot_close(&fs->slot[drive]);
-	sdc_hw_succeed(hw);
+	if (hw) {
+		sdc_hw_succeed(hw);
+	}
 }
 
-static void cmd_mount(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive,
-		      char letter, const char *path) {
+/* letter M/m/N/n.  hw may be NULL (STARTUP.CFG).  Returns 0 or SDC_ERR_*. */
+static int fs_mount_path(struct sdc_fs *fs, unsigned drive, char letter,
+			 const char *path, struct sdc_hw *hw) {
 	struct resolved r;
 	unsigned flags = R_WILD_LEAF;
 	int create = (letter == 'n' || letter == 'N');
+	int raw = (letter == 'm' || letter == 'n');
 	int err;
 	struct sdc_slot *s;
 	FILE *fp;
 	int writable = 0;
 
-	if (path[0] == 0) {
+	if (drive >= SDC_SLOTS) {
+		return SDC_ERR_INVALID;
+	}
+	if (!path || path[0] == 0) {
 		if (letter == 'M' || letter == 'm') {
-			cmd_eject(fs, hw, drive);
-			return;
+			slot_close(&fs->slot[drive]);
+			return 0;
 		}
-		sdc_hw_fail(hw, SDC_ERR_INVALID);
-		return;
+		return SDC_ERR_INVALID;
 	}
 
 	if (create) {
@@ -674,37 +814,32 @@ static void cmd_mount(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive,
 
 	err = resolve_path(fs, path, flags, &r);
 	if (err) {
-		sdc_hw_fail(hw, (uint8_t)err);
-		return;
+		return err;
 	}
 	if (r.is_dir) {
-		sdc_hw_fail(hw, SDC_ERR_INVALID);
-		return;
+		return SDC_ERR_INVALID;
 	}
 
 	slot_close(&fs->slot[drive]);
 
 	if (r.exists && file_in_use(fs, r.host, (int)drive)) {
-		sdc_hw_fail(hw, SDC_ERR_INUSE);
-		return;
+		return SDC_ERR_INUSE;
 	}
 
 	if (!r.exists) {
 		if (!create) {
-			sdc_hw_fail(hw, SDC_ERR_NOTFOUND);
-			return;
+			return SDC_ERR_NOTFOUND;
 		}
 		fp = fopen(r.host, "w+b");
 		if (!fp) {
-			sdc_hw_fail(hw, SDC_ERR_MISC);
-			return;
+			return SDC_ERR_MISC;
 		}
-		if (letter == 'N' && hw->latched_preg[0] == 0 &&
+		if (letter == 'N' && hw && hw->latched_preg[0] == 0 &&
 		    hw->latched_preg[1] == 0 && hw->latched_preg[2] == 0) {
-			if (fseek(fp, 630L * SDC_BLOCK_SIZE - 1, SEEK_SET) != 0 || fputc(0, fp) == EOF) {
+			if (fseek(fp, 630L * SDC_BLOCK_SIZE - 1, SEEK_SET) != 0 ||
+			    fputc(0, fp) == EOF) {
 				fclose(fp);
-				sdc_hw_fail(hw, SDC_ERR_MISC);
-				return;
+				return SDC_ERR_MISC;
 			}
 		}
 		writable = 1;
@@ -717,13 +852,11 @@ static void cmd_mount(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive,
 			writable = 0;
 		}
 		if (!fp) {
-			sdc_hw_fail(hw, SDC_ERR_MISC);
-			return;
+			return SDC_ERR_MISC;
 		}
 		if (!writable && (letter == 'n' || letter == 'N')) {
 			fclose(fp);
-			sdc_hw_fail(hw, 0);
-			return;
+			return SDC_ERR_MISC;
 		}
 	}
 
@@ -733,23 +866,46 @@ static void cmd_mount(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive,
 	s->host_path = sdc_strdup(r.host);
 	if (!s->host_path) {
 		slot_close(s);
-		sdc_hw_fail(hw, SDC_ERR_MISC);
-		return;
+		return SDC_ERR_MISC;
 	}
 	slot_fill_meta(s);
-	sdc_hw_succeed(hw);
+	err = slot_probe_image(s, raw);
+	if (err) {
+		slot_close(s);
+		return err;
+	}
+	return 0;
 }
 
-static void cmd_set_cwd(struct sdc_fs *fs, struct sdc_hw *hw, const char *path) {
-	struct resolved r;
+static void cmd_mount(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive,
+		      char letter, const char *path) {
 	int err;
-	const char *p = path[0] ? path : "/";
-	err = resolve_path(fs, p, R_MUST_EXIST | R_MUST_DIR, &r);
+
+	if (path[0] == 0 && (letter == 'M' || letter == 'm')) {
+		cmd_eject(fs, hw, drive);
+		return;
+	}
+	err = fs_mount_path(fs, drive, letter, path, hw);
 	if (err) {
 		sdc_hw_fail(hw, (uint8_t)err);
 		return;
 	}
-	err = set_cwd_from_host(fs, r.host);
+	sdc_hw_succeed(hw);
+}
+
+static int fs_set_cwd(struct sdc_fs *fs, const char *path) {
+	struct resolved r;
+	int err;
+	const char *p = (path && path[0]) ? path : "/";
+	err = resolve_path(fs, p, R_MUST_EXIST | R_MUST_DIR, &r);
+	if (err) {
+		return err;
+	}
+	return set_cwd_from_host(fs, r.host);
+}
+
+static void cmd_set_cwd(struct sdc_fs *fs, struct sdc_hw *hw, const char *path) {
+	int err = fs_set_cwd(fs, path);
 	if (err) {
 		sdc_hw_fail(hw, (uint8_t)err);
 		return;
@@ -959,6 +1115,9 @@ static void cmd_query(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		return;
 	}
 	sz = slot_size(s);
+	if (s->header && sz > s->header) {
+		sz -= s->header;
+	}
 	sectors = (sz + (SDC_BLOCK_SIZE - 1)) / SDC_BLOCK_SIZE;
 	hw->preg[0] = (uint8_t)(sectors >> 16);
 	hw->preg[1] = (uint8_t)(sectors >> 8);
@@ -1026,8 +1185,8 @@ static void cmd_ext(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 
 static void cmd_read(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 	struct sdc_slot *s = &fs->slot[drive];
-	uint32_t lsn = lsn_of(hw);
-	uint32_t off = lsn * SDC_BLOCK_SIZE;
+	uint32_t lsn = adjust_lsn(s, lsn_of(hw), hw->cmd);
+	uint64_t off = (uint64_t)s->header + (uint64_t)lsn * SDC_BLOCK_SIZE;
 	uint32_t sz;
 	size_t n;
 
@@ -1036,7 +1195,7 @@ static void cmd_read(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		return;
 	}
 	sz = slot_size(s);
-	if (off >= sz) {
+	if (off >= (uint64_t)sz) {
 		sdc_hw_fail(hw, 0);
 		return;
 	}
@@ -1045,7 +1204,7 @@ static void cmd_read(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		sdc_hw_fail(hw, SDC_ERR_MISC);
 		return;
 	}
-	n = (size_t)(sz - off);
+	n = (size_t)(sz - (uint32_t)off);
 	if (n > SDC_BLOCK_SIZE) {
 		n = SDC_BLOCK_SIZE;
 	}
@@ -1058,8 +1217,8 @@ static void cmd_read(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 
 static void cmd_write(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 	struct sdc_slot *s = &fs->slot[drive];
-	uint32_t lsn = lsn_of(hw);
-	uint32_t off = lsn * SDC_BLOCK_SIZE;
+	uint32_t lsn = adjust_lsn(s, lsn_of(hw), hw->cmd);
+	uint64_t off = (uint64_t)s->header + (uint64_t)lsn * SDC_BLOCK_SIZE;
 
 	if (slot_ensure(s) != 0) {
 		sdc_hw_fail(hw, SDC_ERR_NOTFOUND);
@@ -1181,4 +1340,126 @@ void sdc_fs_execute(struct sdc_fs *fs, struct sdc_hw *hw) {
 		sdc_hw_succeed(hw);
 		break;
 	}
+}
+
+static char *trim_inplace(char *s) {
+	char *e;
+	while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+		s++;
+	}
+	e = s + strlen(s);
+	while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) {
+		*--e = 0;
+	}
+	return s;
+}
+
+int sdc_fs_apply_startup(struct sdc_fs *fs) {
+	char cfg[PATH_MAX];
+	char buf[512];
+	FILE *fp;
+
+	if (!fs || !fs->root) {
+		return 0;
+	}
+	if (lookup_child(fs->root, "STARTUP.CFG", 0, cfg, sizeof(cfg)) != 0) {
+		return 0;
+	}
+	fp = fopen(cfg, "r");
+	if (!fp) {
+		return 0;
+	}
+	while (fgets(buf, (int)sizeof(buf), fp) != NULL) {
+		char *p = trim_inplace(buf);
+		char key;
+		if (p[0] == 0 || p[0] == '#' || p[0] == ';') {
+			continue;
+		}
+		key = (char)toupper((unsigned char)p[0]);
+		p++;
+		p = trim_inplace(p);
+		if (*p != '=') {
+			continue;
+		}
+		p++;
+		p = trim_inplace(p);
+		if (key == '0') {
+			(void)fs_mount_path(fs, 0, 'M', p, NULL);
+		} else if (key == '1') {
+			(void)fs_mount_path(fs, 1, 'M', p, NULL);
+		} else if (key == 'D') {
+			(void)fs_set_cwd(fs, p);
+		}
+	}
+	fclose(fp);
+	return 0;
+}
+
+int sdc_fs_fdc_ready(const struct sdc_fs *fs, unsigned drive) {
+	if (!fs || drive >= SDC_SLOTS) {
+		return 0;
+	}
+	return fs->slot[drive].fdc_ok && fs->slot[drive].host_path != NULL;
+}
+
+int sdc_fs_fdc_wp(const struct sdc_fs *fs, unsigned drive) {
+	if (!fs || drive >= SDC_SLOTS) {
+		return 1;
+	}
+	return !fs->slot[drive].writable;
+}
+
+static int fdc_xfer(struct sdc_fs *fs, unsigned drive, unsigned track,
+		    unsigned sector, unsigned side, uint8_t *buf, int wr) {
+	struct sdc_slot *s;
+	uint32_t lsn;
+	uint64_t off;
+	int rc;
+
+	if (!fs || drive >= SDC_SLOTS || !buf) {
+		return SDC_FDC_NOTREADY;
+	}
+	s = &fs->slot[drive];
+	if (!s->fdc_ok || slot_ensure(s) != 0) {
+		return SDC_FDC_NOTREADY;
+	}
+	if (wr && !s->writable) {
+		return SDC_FDC_WP;
+	}
+	rc = chs_to_lsn(s, track, sector, side, &lsn);
+	if (rc != SDC_FDC_OK) {
+		return rc;
+	}
+	off = (uint64_t)s->header + (uint64_t)lsn * SDC_BLOCK_SIZE;
+	if (fseek(s->fp, (long)off, SEEK_SET) != 0) {
+		return SDC_FDC_IO;
+	}
+	if (wr) {
+		if (fwrite(buf, 1, SDC_BLOCK_SIZE, s->fp) != SDC_BLOCK_SIZE) {
+			return SDC_FDC_IO;
+		}
+		fflush(s->fp);
+	} else {
+		size_t n = fread(buf, 1, SDC_BLOCK_SIZE, s->fp);
+		if (n < SDC_BLOCK_SIZE) {
+			if (ferror(s->fp)) {
+				return SDC_FDC_IO;
+			}
+			memset(buf + n, 0, SDC_BLOCK_SIZE - n);
+			if (n == 0) {
+				return SDC_FDC_RNF;
+			}
+		}
+	}
+	return SDC_FDC_OK;
+}
+
+int sdc_fs_fdc_read(struct sdc_fs *fs, unsigned drive, unsigned track,
+		    unsigned sector, unsigned side, uint8_t *buf) {
+	return fdc_xfer(fs, drive, track, sector, side, buf, 0);
+}
+
+int sdc_fs_fdc_write(struct sdc_fs *fs, unsigned drive, unsigned track,
+		     unsigned sector, unsigned side, const uint8_t *buf) {
+	return fdc_xfer(fs, drive, track, sector, side, (uint8_t *)buf, 1);
 }
