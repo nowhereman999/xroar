@@ -9,6 +9,9 @@
  *  / SDC_Play.asm (open/stream/abort; DAC timing is not in this layer).
  *  When $FF40 is not $43, WD1773-ish FDC registers serve SDC-DOS Disk BASIC
  *  LOAD/RUN/LOADM on an M: mounted DSK.  STARTUP.CFG auto-mounts at attach.
+ *  The built-in profile defaults cart-rom @sdcdos (sdcdos.rom on the ROM
+ *  path) so Hardware → Cartridge → CoCoSDC and CLI -cart cocosdc both boot
+ *  SDC-DOS when that image is present.  -cart-rom still overrides.
  *
  *  This is not a VCC SDC.dll port.
  *
@@ -115,12 +118,15 @@ static void cocosdc_reset(struct cart *c, bool hard);
 static void cocosdc_attach(struct cart *c);
 static void cocosdc_detach(struct cart *c);
 
+static void cocosdc_config_complete(struct cart_config *);
 static void cocosdc_apply_root(struct cocosdc *sdc);
 static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when);
 static void cocosdc_log_fdc_dir(struct cocosdc *sdc);
 static int cocosdc_apply_startup(struct cocosdc *sdc, const char *when);
 static void cocosdc_log_completed(struct cocosdc *sdc);
 static void cocosdc_update_lines(struct cocosdc *sdc);
+static void cocosdc_log_rom(struct cart *c);
+static int cocosdc_rom_loaded(struct cart *c);
 static void strip_root_quotes(char *s);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -146,7 +152,8 @@ const struct cart_partdb_entry cocosdc_part = {
 		.name = "cocosdc",
 		.description = "Darren Atkinson | CoCoSDC (SDC-DOS floppy)",
 		.funcs = &cocosdc_funcs
-	}
+	},
+	.config_complete = cocosdc_config_complete
 };
 
 static struct part *cocosdc_allocate(void) {
@@ -184,10 +191,13 @@ static void cocosdc_initialise(struct part *p, void *options) {
 
 static bool cocosdc_finish(struct part *p) {
 	struct cocosdc *sdc = (struct cocosdc *)p;
+	struct cart *c = &sdc->cart;
 
 	if (!cart_rom_finish(p)) {
 		return 0;
 	}
+
+	cocosdc_log_rom(c);
 
 	if (!sdc->root && xroar.cfg.sdc.root) {
 		sdc->root = xstrdup(xroar.cfg.sdc.root);
@@ -243,6 +253,54 @@ static void strip_root_quotes(char *s) {
 		memmove(s, s + 1, n - 2);
 		s[n - 2] = 0;
 	}
+}
+
+static void cocosdc_config_complete(struct cart_config *cc) {
+	/* Same pattern as rsdos/ide: menu Hardware → Cartridge and -cart
+	 * cocosdc share this profile.  Without a default ROM, $C000 is empty
+	 * and Hard Reset falls through to ECB / Super ECB. */
+	if (!cc->rom_dfn && !cc->rom) {
+		cc->rom = xstrdup("@sdcdos");
+	}
+}
+
+static int cocosdc_rom_loaded(struct cart *c) {
+	unsigned i;
+
+	if (!c || !c->ROM) {
+		return 0;
+	}
+	for (i = 0; i < c->ROM->nslots; i++) {
+		if (c->ROM->d[i]) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void cocosdc_log_rom(struct cart *c) {
+	const char *want;
+	const char *rompath;
+
+	want = (c && c->config && c->config->rom) ? c->config->rom : "(none)";
+	rompath = xroar.cfg.file.rompath ? xroar.cfg.file.rompath : "";
+
+	if (cocosdc_rom_loaded(c)) {
+		const char *file = c->ROM->slot[0].filename;
+		LOG_MOD_DEBUG(1, "cocosdc", "SDC-DOS ROM loaded: %s\n",
+			      file ? file : want);
+		return;
+	}
+
+	/* Default log level is 1, but CRC32 INVALID is DEBUG-only.  Menu
+	 * CoCoSDC after Floppy otherwise looks like a working cart (checkmark)
+	 * sitting on a green ECB OK prompt. */
+	LOG_MOD_ERROR("cocosdc",
+		     "SDC-DOS ROM not found (cart-rom %s, rompath %s). "
+		     "Cartridge stays selected but $C000 is empty, so Hard Reset "
+		     "boots ECB / Super ECB OK. Place sdcdos.rom in the ROM path "
+		     "(macOS: ~/Library/XRoar/roms/) or pass -cart-rom FILE.\n",
+		     want, rompath[0] ? rompath : "(default)");
 }
 
 static void cocosdc_log_startup(struct cocosdc *sdc, int err, const char *when) {

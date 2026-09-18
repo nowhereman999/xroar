@@ -355,10 +355,10 @@ int cocoa_super_all_keys = 0;
 		ui_update_state(-1, ui_tag_hkbd_lang, value, NULL);
 		break;
 	case ui_tag_kbd_translate:
-		ui_update_state(-1, ui_tag_kbd_translate, UI_NEXT, NULL);
+		ui_update_state(-1, ui_tag_kbd_translate, value, NULL);
 		break;
 	case ui_tag_ratelimit:
-		ui_update_state(-1, ui_tag_ratelimit_latch, UI_NEXT, NULL);
+		ui_update_state(-1, ui_tag_ratelimit_latch, value, NULL);
 		break;
 
 	/* Joysticks: */
@@ -463,10 +463,10 @@ int cocoa_super_all_keys = 0;
 		[item setState:((value == uimac->kbd.lang) ? NSOnState : NSOffState)];
 		break;
 	case ui_tag_kbd_translate:
-		[item setState:(uimac->kbd.translate ? NSOnState : NSOffState)];
+		[item setState:((value == uimac->kbd.translate) ? NSOnState : NSOffState)];
 		break;
 	case ui_tag_ratelimit:
-		[item setState:(uimac->misc.ratelimit_latch ? NSOnState : NSOffState)];
+		[item setState:((value == uimac->misc.ratelimit_latch) ? NSOnState : NSOffState)];
 		break;
 
 	case uimac_tag_joystick_right:
@@ -1009,13 +1009,43 @@ static void setup_tool_menu(void) {
 	[tool_menu addItem:item];
 	[item release];
 
-	item = [[NSMenuItem alloc] initWithTitle:@"Keyboard translation" action:@selector(do_set_state:) keyEquivalent:@"z"];
-	[item setTag:UIMAC_TAG(ui_tag_kbd_translate)];
+	/* Natural = translated host symbols; Emulated = raw CoCo/Dragon keys. */
+	submenu = [[NSMenu alloc] initWithTitle:@"Keyboard"];
+
+	item = [[NSMenuItem alloc] initWithTitle:@"Natural" action:@selector(do_set_state:) keyEquivalent:@"z"];
+	[item setTag:UIMAC_TAGV(ui_tag_kbd_translate, 1)];
+	[item setOnStateImage:[NSImage imageNamed:@"NSMenuRadio"]];
+	[submenu addItem:item];
+	[item release];
+
+	item = [[NSMenuItem alloc] initWithTitle:@"Emulated" action:@selector(do_set_state:) keyEquivalent:@""];
+	[item setTag:UIMAC_TAGV(ui_tag_kbd_translate, 0)];
+	[item setOnStateImage:[NSImage imageNamed:@"NSMenuRadio"]];
+	[submenu addItem:item];
+	[item release];
+
+	item = [[NSMenuItem alloc] initWithTitle:@"Keyboard" action:nil keyEquivalent:@""];
+	[item setSubmenu:submenu];
 	[tool_menu addItem:item];
 	[item release];
 
-	item = [[NSMenuItem alloc] initWithTitle:@"Rate limit" action:@selector(do_set_state:) keyEquivalent:@""];
-	[item setTag:UIMAC_TAG(ui_tag_ratelimit)];
+	/* 100% = realtime latch on; Maximum = unthrottled (no-ratelimit). */
+	submenu = [[NSMenu alloc] initWithTitle:@"Speed"];
+
+	item = [[NSMenuItem alloc] initWithTitle:@"100%" action:@selector(do_set_state:) keyEquivalent:@""];
+	[item setTag:UIMAC_TAGV(ui_tag_ratelimit, 1)];
+	[item setOnStateImage:[NSImage imageNamed:@"NSMenuRadio"]];
+	[submenu addItem:item];
+	[item release];
+
+	item = [[NSMenuItem alloc] initWithTitle:@"Maximum" action:@selector(do_set_state:) keyEquivalent:@""];
+	[item setTag:UIMAC_TAGV(ui_tag_ratelimit, 0)];
+	[item setOnStateImage:[NSImage imageNamed:@"NSMenuRadio"]];
+	[submenu addItem:item];
+	[item release];
+
+	item = [[NSMenuItem alloc] initWithTitle:@"Speed" action:nil keyEquivalent:@""];
+	[item setSubmenu:submenu];
 	[tool_menu addItem:item];
 	[item release];
 
