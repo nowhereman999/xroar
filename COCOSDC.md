@@ -66,11 +66,17 @@ Built-in profile (same name as the type):
 xroar -machine coco3 -cart cocosdc -sdc-root /path/to/sdcard
 ```
 
+That is the same built-in profile as **Hardware → Cartridge → CoCoSDC (Phase D)**.
+Both now default `cart-rom @sdcdos` (search `sdcdos.rom` on the ROM path) so
+Hard Reset boots SDC-DOS when the image is present.  Studio Run still wins if
+it passes an explicit `-cart-rom`.
+
 Equivalent using a cart-type option (useful in `xroar.conf`):
 
 ```text
 cart cocosdc
   cart-type cocosdc
+  cart-rom @sdcdos
   cart-opt sdc-root=/path/to/sdcard
 ```
 
@@ -81,15 +87,46 @@ xroar -machine coco3 -cart cocosdc -cart-opt sdc-root=/path/to/sdcard
 ```
 
 `-sdc-root` may also appear in `~/Library/XRoar/xroar.conf` (macOS) or
-`~/.xroar/xroar.conf` (Linux).  A leading `~/` is expanded.
+`~/.xroar/xroar.conf` (Linux).  A leading `~/` is expanded.  The Cartridge
+menu does **not** set `-sdc-root`; without it SDC-DOS can still banner but
+`DIR` / `DRIVE` have no SD volume.
 
 MPI: insert the profile into a slot as with any other cart
 (`-cart mpi -mpi-load-cart cocosdc`).  SCS (`$FF40–$FF5F`) follows the MPI
 P2 routing like RS-DOS.
 
-An optional `-cart-rom` can still be attached (SDC-DOS flash image).  It is
-not required; load your CoCo program some other way (`-run`, cassette,
-floppy, etc.).
+### SDC-DOS ROM (menu vs CLI)
+
+| Path | ROM used |
+| --- | --- |
+| Studio / CLI `-cart cocosdc -cart-rom FILE` | `FILE` (unchanged) |
+| CLI `-cart cocosdc` with no `-cart-rom` | `@sdcdos` → `sdcdos.rom` on the ROM path |
+| Mac **Hardware → Cartridge → CoCoSDC (Phase D)** | same built-in profile, so also `@sdcdos` |
+
+Place the flash image as one of:
+
+```text
+~/Library/XRoar/roms/sdcdos.rom     (macOS; searched even without Cocoa)
+~/.xroar/roms/sdcdos.rom            (Linux)
+```
+
+Also accepted: `sdc-dos`, `sdc_dos`, `SDCDOS`, with `.rom` / `.ROM`.
+Override with `-cart-rom /path/to/sdcdos.rom` or `-rompath DIR`.
+
+CommSDC FileAccess (`m:` / stream / Play) still works with an empty `$C000`;
+only the SDC-DOS banner needs the ROM.
+
+**If the ROM is missing:** the menu checkmark still appears (the cart
+*module* is attached).  stderr prints
+
+```text
+[cocosdc] WARNING: SDC-DOS ROM not found (cart-rom @sdcdos, rompath …).
+Cartridge stays selected but $C000 is empty, so Hard Reset boots ECB / Super ECB OK.
+Place sdcdos.rom in the ROM path (macOS: ~/Library/XRoar/roms/) or pass -cart-rom FILE.
+```
+
+That green ECB / Super ECB `OK` prompt is the missing-ROM fallback, not a
+dead cart.  Previously this was silent (CRC32 INVALID only at `-v`).
 
 Confirm the type is registered:
 
@@ -122,6 +159,12 @@ host symbols, ⌘Z) or **Emulated** (raw CoCo/Dragon keys); **Tool → Speed
 are the existing `ui_tag_kbd_translate` and `ui_tag_ratelimit_latch`
 knobs, not new backends.
 
+**Hardware → Cartridge → CoCoSDC (Phase D)** then **Hardware → Hard Reset**
+should boot SDC-DOS the same as CLI `-cart cocosdc` when `sdcdos.rom` is
+on the ROM path.  A missing ROM prints the WARNING above and stays on the
+green ECB / Super ECB `OK` prompt (cart still checked).  `DIR` needs
+`-sdc-root` (CLI or `xroar.conf`); the menu does not invent one.
+
 SDC-DOS smoke (Glen’s Studio argv shape: DECB `.DSK` + `STARTUP.CFG` `0=….DSK`,
 **not** a loose FAT `START.BAS`):
 
@@ -131,6 +174,9 @@ src/xroar -machine coco3 -ram 2048 -cart cocosdc \
   -cart-rom ~/Library/XRoar/roms/sdcdos.rom \
   -sdc-root "/path/to/sdc-root" \
   -type 'RUN"START"\r' -no-disk-writeback
+
+# menu-equivalent: no -cart-rom; sdcdos.rom must be on the ROM path
+src/xroar -machine coco3 -cart cocosdc -sdc-root "/path/to/sdc-root"
 ```
 
 Quoted `-sdc-root` is fine (Google Drive spaces).  Default log level prints

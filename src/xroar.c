@@ -612,6 +612,7 @@ static char const * const default_config[] = {
 	"cart cocosdc",
 	"cart-desc 'CoCoSDC (Phase D)'",
 	"cart-type cocosdc",
+	"cart-rom @sdcdos",
 #ifndef HAVE_WASM
 #ifdef WANT_EXPERIMENTAL
 	// Ikon Ultra Drive cartridge
@@ -717,6 +718,8 @@ static char const * const default_config[] = {
 	// RSDOS
 	"romlist rsdos=disk11,disk10",
 	"romlist cp450=cp450dsk,@rsdos",
+	// CoCoSDC SDC-DOS flash (Hardware → Cartridge and -cart cocosdc)
+	"romlist sdcdos=sdcdos,sdc-dos,sdc_dos,SDCDOS",
 	// Delta
 	"romlist delta=delta2,delta1a,delta19,delta,deltados,'Premier Micros - DeltaDOS'",
 #ifndef HAVE_WASM
