@@ -159,6 +159,12 @@ host symbols, ⌘Z) or **Emulated** (raw CoCo/Dragon keys); **Tool → Speed
 are the existing `ui_tag_kbd_translate` and `ui_tag_ratelimit_latch`
 knobs, not new backends.
 
+**Hardware → Cartridge → CoCoSDC (Phase D)** after a **Floppy / Disk BASIC**
+session (Studio Run media = Floppy) uses this same profile.  Selecting
+CoCoSDC now loads `@sdcdos` and **hard-resets** so the SDC-DOS banner
+appears without relying on a second Hard Reset.  Studio Floppy Run itself
+is unchanged (it still starts Disk BASIC).
+
 **Hardware → Cartridge → CoCoSDC (Phase D)** then **Hardware → Hard Reset**
 should boot SDC-DOS the same as CLI `-cart cocosdc` when `sdcdos.rom` is
 on the ROM path.  A missing ROM prints the WARNING above and stays on the

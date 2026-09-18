@@ -2431,6 +2431,14 @@ static void xroar_ui_set_cartridge(void *sptr, int tag, void *smsg) {
 			for (unsigned i = 0; i < 2; ++i) {
 				ui_update_state(-1, ui_tag_hd_filename, i, private_cfg.file.hd[i]);
 			}
+			/* Cart reset alone leaves the 6809 in ECB / Disk BASIC.
+			 * Studio CoCoSDC Run starts with -cart cocosdc so the
+			 * following machine hard reset enters SDC-DOS.  Menu
+			 * Hardware → Cartridge after a Floppy session did not.
+			 * Hard-reset now so CoCoSDC is the same either way. */
+			if (cc->type && 0 == c_strcasecmp(cc->type, "cocosdc")) {
+				xroar_hard_reset();
+			}
 		} else {
 			cc = NULL;
 		}
