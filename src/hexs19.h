@@ -27,8 +27,14 @@
 #ifndef XROAR_HEXS19_H_
 #define XROAR_HEXS19_H_
 
+struct decb_bin;
+
 int intel_hex_read(const char *filename, int autorun);
 int motorola_s19_read(const char *filename, int autorun);
 int bin_load(const char *filename, int autorun);
+
+/* Poke a parsed DECB/DragonDOS image through the current machine CPU map
+ * and optionally set PC from the postamble EXEC address. */
+int bin_apply_image(const struct decb_bin *bin, int autorun);
 
 #endif
