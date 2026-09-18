@@ -116,6 +116,12 @@ From the repo root (not `src/`):
 working 1.12.1-style video path).  Optional: `make -C src` skips the info
 manual.  Host tests (no ROM): `./tools/run-cocosdc-tests.sh`.
 
+Mac menu bar (`-ui macosx`): **Tool → Keyboard → Natural** (translated
+host symbols, ⌘Z) or **Emulated** (raw CoCo/Dragon keys); **Tool → Speed
+→ 100%** (realtime) or **Maximum** (unthrottled / `-no-ratelimit`). These
+are the existing `ui_tag_kbd_translate` and `ui_tag_ratelimit_latch`
+knobs, not new backends.
+
 SDC-DOS smoke (Glen’s Studio argv shape: DECB `.DSK` + `STARTUP.CFG` `0=….DSK`,
 **not** a loose FAT `START.BAS`):
 
