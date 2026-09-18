@@ -19,7 +19,20 @@ Phase A was register plumbing only (VERSION, reset handshake, bit-5 command
 the 512-byte stream path those loaders use.  Phase D is Play’s
 open/stream/abort contract against that stream (not DAC audio, not Studio
 Run).  This tip adds **FDC floppy-emulation** for SDC-DOS Disk BASIC on a
-mounted `M:` image, plus MCU-style `STARTUP.CFG` auto-mount.
+mounted `M:` image, plus MCU-style `STARTUP.CFG` auto-mount, Mac
+Keyboard/Speed menus, and menu CoCoSDC ROM attach.
+
+## Canonical Studio XRoar tip
+
+Glen / Studio CoCoSDC Run should build **`cursor/cocosdc-mac-menus-rom-da33`**
+(not `main`).  It is a fast-forward stack:
+
+1. Working CoCoSDC FDC / SDC-DOS — `cursor/cocosdc-sdc-dos-dsk-d7f5` @ `a01525a3`, then `cursor/cocosdc-startup-cfg-fdc-12c0` @ `d6e3bc25` (`$82`/`$A2` DIR/SAVE + macOS deprecations)
+2. Mac **Tool → Keyboard** Natural/Emulated and **Tool → Speed** 100%/Maximum (PR #3)
+3. Menu **Hardware → Cartridge → CoCoSDC (Phase D)** loads `@sdcdos` after Floppy (PR #4)
+
+`cursor/cocosdc-startup-cfg-fdc-12c0` stays **frozen** as the FDC tip
+Studio previously documented (open PR #2).  Do not force-push `main`.
 
 ## SDC-DOS mounted-image fix (2026-09-17)
 
@@ -142,9 +155,13 @@ You should see `cocosdc`.
 Rebuild `src/xroar` after updating the source. Restart an already running
 XRoar process to use the new binary.
 
-From the repo root (not `src/`):
+From `~/xroar` (repo root, not `src/`):
 
 ```text
+cd ~/xroar
+git fetch origin
+git checkout cursor/cocosdc-mac-menus-rom-da33
+git pull --ff-only origin cursor/cocosdc-mac-menus-rom-da33
 ./configure --without-gtk2 --without-gtk3 --with-sdl2 && make
 ```
 
@@ -170,6 +187,13 @@ should boot SDC-DOS the same as CLI `-cart cocosdc` when `sdcdos.rom` is
 on the ROM path.  A missing ROM prints the ERROR above and stays on the
 green ECB / Super ECB `OK` prompt (cart still checked).  `DIR` needs
 `-sdc-root` (CLI or `xroar.conf`); the menu does not invent one.
+
+Acceptance path (unchanged Studio Run media):
+
+1. Studio **CoCoSDC** Run → SDC-DOS 1.75 (CLI `-cart cocosdc -cart-rom`).
+2. Studio **Floppy** Run → Disk BASIC (not forced to CoCoSDC).
+3. **Hardware → Cartridge → CoCoSDC (Phase D)** → SDC-DOS banner (`sdcdos.rom` on the ROM path).
+4. **Tool → Keyboard → Natural / Emulated** and **Tool → Speed → 100% / Maximum**.
 
 SDC-DOS smoke (Glen’s Studio argv shape: DECB `.DSK` + `STARTUP.CFG` `0=….DSK`,
 **not** a loose FAT `START.BAS`):
