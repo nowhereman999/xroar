@@ -293,9 +293,9 @@ static void cocosdc_log_rom(struct cart *c) {
 	}
 
 	/* Default log level is 1, but CRC32 INVALID is DEBUG-only.  Menu
-	 * CoCoSDC + Hard Reset otherwise looks like a working cart (checkmark)
+	 * CoCoSDC after Floppy otherwise looks like a working cart (checkmark)
 	 * sitting on a green ECB OK prompt. */
-	LOG_MOD_WARN("cocosdc",
+	LOG_MOD_ERROR("cocosdc",
 		     "SDC-DOS ROM not found (cart-rom %s, rompath %s). "
 		     "Cartridge stays selected but $C000 is empty, so Hard Reset "
 		     "boots ECB / Super ECB OK. Place sdcdos.rom in the ROM path "

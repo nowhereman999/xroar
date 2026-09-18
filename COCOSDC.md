@@ -120,7 +120,7 @@ only the SDC-DOS banner needs the ROM.
 *module* is attached).  stderr prints
 
 ```text
-[cocosdc] WARNING: SDC-DOS ROM not found (cart-rom @sdcdos, rompath …).
+[cocosdc] ERROR: SDC-DOS ROM not found (cart-rom @sdcdos, rompath …).
 Cartridge stays selected but $C000 is empty, so Hard Reset boots ECB / Super ECB OK.
 Place sdcdos.rom in the ROM path (macOS: ~/Library/XRoar/roms/) or pass -cart-rom FILE.
 ```
@@ -167,7 +167,7 @@ is unchanged (it still starts Disk BASIC).
 
 **Hardware → Cartridge → CoCoSDC (Phase D)** then **Hardware → Hard Reset**
 should boot SDC-DOS the same as CLI `-cart cocosdc` when `sdcdos.rom` is
-on the ROM path.  A missing ROM prints the WARNING above and stays on the
+on the ROM path.  A missing ROM prints the ERROR above and stays on the
 green ECB / Super ECB `OK` prompt (cart still checked).  `DIR` needs
 `-sdc-root` (CLI or `xroar.conf`); the menu does not invent one.
 
