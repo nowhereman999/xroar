@@ -20,7 +20,9 @@
  *  \endlicenseblock
  */
 
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 
 #include "top-config.h"
 

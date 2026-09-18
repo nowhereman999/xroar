@@ -195,6 +195,77 @@ Acceptance path (unchanged Studio Run media):
 3. **Hardware → Cartridge → CoCoSDC (Phase D)** → SDC-DOS banner (`sdcdos.rom` on the ROM path).
 4. **Tool → Keyboard → Natural / Emulated** and **Tool → Speed → 100% / Maximum**.
 
+## Direct RAM inject (skip LOADM)
+
+Studio can poke a DECB `.BIN` into CoCo 3 RAM and jump to EXEC without
+`LOADM` / SDC `LOADM` / a mounted `.DSK`.  Floppy, CoCoSDC, `-cart`, and
+`-type` are unchanged.
+
+**CLI flags**
+
+| Flag | Meaning |
+| --- | --- |
+| `-inject-bin FILE` | Parse DECB (or DragonDOS) preamble blocks and poke them into RAM after startup |
+| `-inject-exec` | After inject, set PC from the postamble EXEC address (**default on**) |
+| `-no-inject-exec` | Poke RAM only; leave PC where BASIC left it |
+
+A missing or malformed BIN prints `[inject] ERROR: …` on **stderr** and
+exits before the UI starts.  `-load` / `-run FILE.bin` still exist (2 s
+delayed poke via the same CPU map); `-inject-bin` is the fail-fast Studio
+path and does not require a `.BIN` extension.
+
+### Mac rebuild + test
+
+From the repo root, on this inject branch stacked on the CoCoSDC/Mac-menus
+tip (`cursor/cocosdc-mac-menus-rom-da33`):
+
+```text
+cd ~/xroar
+git fetch origin
+git checkout cursor/coco3-inject-bin-63f4
+git pull --ff-only origin cursor/coco3-inject-bin-63f4
+./configure --without-gtk2 --without-gtk3 --with-sdl2 && make -C src
+```
+
+ROMs: NTSC Super Extended Color BASIC (and SDC-DOS only if you also attach
+CoCoSDC) on the ROM path, typically `~/Library/XRoar/roms`.
+
+```text
+src/xroar -ui macosx -default-machine coco3 \
+  -inject-bin /path/to/PROGRAM.BIN
+
+# equivalent; -inject-exec is the default
+src/xroar -ui macosx -default-machine coco3 \
+  -inject-bin /path/to/PROGRAM.BIN -inject-exec
+
+# CoCoSDC / Floppy / typed BASIC still work alongside inject:
+src/xroar -ui macosx -default-machine coco3 -cart cocosdc \
+  -sdc-root /path/to/sdc-root \
+  -inject-bin /path/to/PROGRAM.BIN
+```
+
+Host parser tests (no ROM): `./tools/run-cocosdc-tests.sh`.
+
+### CoCo 3 MMU limits (Glen / Studio)
+
+Inject is **LOADM-equivalent**, not a physical 512K dump:
+
+- Bytes are written with `machine->write_byte` (GIME `tcc1014_mem_cycle`)
+  using **16-bit CPU addresses** and the **current MMU task / 8K banks**.
+- The poke is delayed **2 emulated seconds** after hard reset (same window
+  as `-run FILE.bin`) so Super ECB has typically reached `OK` and will not
+  wipe low RAM during init.
+- After that window, RAM is usually mapped at `$0000–$7FFF` and ROM at
+  `$8000–$FEFF`.  Typical DECB load addresses in low RAM are fine.
+- Blocks at `$8000+` may write-through to RAM under ROM when RAS is
+  asserted, but **EXEC there still runs ROM** unless the program (or the
+  user) maps RAM (`$FFDF` / GIME MMU registers `$FFA0–$FFAF`).
+- Inject does **not** program GIME MMU banks, the optional DAT extra bits,
+  or 512K/2M physical pages.  Multi-bank titles still have to set the MMU
+  themselves after they start.
+- Postamble EXEC `$0000` does not set PC (`[inject] WARNING` on stderr).
+- A snapshot (`-load foo.sna`) skips inject, as with other startup media.
+
 SDC-DOS smoke (Glen’s Studio argv shape: DECB `.DSK` + `STARTUP.CFG` `0=….DSK`,
 **not** a loose FAT `START.BAS`):
 
