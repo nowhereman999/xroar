@@ -17,6 +17,7 @@ EXTRA_DIST += \
 	cocosdc_fs_test.c \
 	cocosdc_io_error_test.c \
 	decb_bin_test.c \
+	gime_text_mode_test.c \
 	run-cocosdc-tests.sh \
 	run-cocosdc-rom-tests.py \
 	hkbd_lang_tables.pl \

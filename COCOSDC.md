@@ -160,15 +160,23 @@ From `~/xroar` (repo root, not `src/`):
 ```text
 cd ~/xroar
 git fetch origin
-git checkout cursor/cocosdc-mac-menus-rom-da33
-git pull --ff-only origin cursor/cocosdc-mac-menus-rom-da33
-./configure --without-gtk2 --without-gtk3 --with-sdl2 && make
+git checkout cursor/gime-width80-text-5424
+git pull --ff-only origin cursor/gime-width80-text-5424
+./configure --without-gtk3 --without-sdl3
+make clean && make
+grep -E 'HAVE_COCOA|WANT_UI_SDL' config.h
 ```
 
+Expect `#define HAVE_COCOA 1` and **no** `WANT_UI_SDL`.  Plain `./configure`
+finds Homebrew SDL3 and builds the SDL3 UI (no Mac menus).
+
 `make` from the root still tries `doc/xroar.info` if `makeinfo` is missing;
-`src/xroar` is already linked.  On Mac, `--with-sdl2` is Cocoa/`macosx` (the
-working 1.12.1-style video path).  Optional: `make -C src` skips the info
+`src/xroar` is already linked.  Optional: `make -C src` skips the info
 manual.  Host tests (no ROM): `./tools/run-cocosdc-tests.sh`.
+
+NTSC CoCo 3 now defaults to **RGB** (View → TV Input).  WIDTH 64/80 is
+1 pixel per font bit; the old composite 5-bit CCR turned those bits into
+colored dots while WIDTH 40 (2 px/bit) stayed readable.
 
 Mac menu bar (`-ui macosx`): **Tool → Keyboard → Natural** (translated
 host symbols, ⌘Z) or **Emulated** (raw CoCo/Dragon keys); **Tool → Speed
@@ -224,7 +232,9 @@ cd ~/xroar
 git fetch origin
 git checkout cursor/coco3-inject-bin-63f4
 git pull --ff-only origin cursor/coco3-inject-bin-63f4
-./configure --without-gtk2 --without-gtk3 --with-sdl2 && make -C src
+./configure --without-gtk3 --without-sdl3
+make clean && make -C src
+grep -E 'HAVE_COCOA|WANT_UI_SDL' config.h   # expect HAVE_COCOA, no WANT_UI_SDL
 ```
 
 ROMs: NTSC Super Extended Color BASIC (and SDC-DOS only if you also attach

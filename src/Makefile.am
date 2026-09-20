@@ -615,7 +615,7 @@ endif
 # No SDL, ROMs, or CoCo program.  `make check` runs them after ./configure;
 # ./tools/run-cocosdc-tests.sh works without autotools.
 
-check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test cocosdc_io_error_test decb_bin_test
+check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test cocosdc_io_error_test decb_bin_test gime_text_mode_test
 TESTS = $(check_PROGRAMS)
 
 cocosdc_hw_test_SOURCES = $(top_srcdir)/tools/cocosdc_hw_test.c
@@ -637,3 +637,8 @@ decb_bin_test_SOURCES = $(top_srcdir)/tools/decb_bin_test.c decb_bin.c
 decb_bin_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
 decb_bin_test_CFLAGS = -std=c11 -Wall
 decb_bin_test_LDADD =
+
+gime_text_mode_test_SOURCES = $(top_srcdir)/tools/gime_text_mode_test.c tcc1014/font-gime.c
+gime_text_mode_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+gime_text_mode_test_CFLAGS = -std=c11 -Wall
+gime_text_mode_test_LDADD =

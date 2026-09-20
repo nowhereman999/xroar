@@ -240,7 +240,11 @@ static void coco3_config_complete(struct machine_config *mc) {
 			break;
 		case TV_NTSC:
 		case TV_PAL_M:
-			mc->tv_input = TV_INPUT_CMP_KBRW;
+			/* RGB: GIME WIDTH 64/80 is 1 px/font-bit.  Composite
+			 * 5-bit CCR turns those bits into colored dots while
+			 * WIDTH 40 (2 px/bit) stays readable.  Composite
+			 * remains on View → TV Input. */
+			mc->tv_input = TV_INPUT_RGB;
 			break;
 		}
 	}
