@@ -29,6 +29,11 @@ $cc $cflags -I"$root" -I"$root/src" -o "$tmp/cocosdc_io_error_test" \
 	"$root/tools/cocosdc_io_error_test.c"
 "$tmp/cocosdc_io_error_test"
 
+echo "==> gime_text_mode_test (WIDTH 40/64/80 CGROM vs HSCREEN 1)"
+$cc $cflags -I"$root/src" -o "$tmp/gime_text_mode_test" \
+	"$root/tools/gime_text_mode_test.c" "$root/src/tcc1014/font-gime.c"
+"$tmp/gime_text_mode_test"
+
 echo "==> crclist_match_test (NTSC Super ECB 0xb4c88d6c vs @coco3)"
 $cc $cflags -DHAVE_REGEX_H -I"$root" -I"$root/src" -I"$root/portalib" -o "$tmp/crclist_match_test" \
 	"$root/tools/crclist_match_test.c" \

@@ -41,6 +41,7 @@
 #include "part.h"
 #include "serialise.h"
 #include "tcc1014/font-gime.h"
+#include "tcc1014/gime-text-mode.h"
 #include "tcc1014/tcc1014.h"
 #include "vo.h"
 #include "xroar.h"
@@ -416,9 +417,8 @@ static const unsigned VRES_LPF_lTB[2][4] = {
 // Lines of active area
 static const unsigned VRES_LPF_lAA[4] = { 192, 199, 65535, 225 };
 
-// Bytes per row
+// Bytes per row (graphics).  Text BPR is gime_text_bpr() in gime-text-mode.h.
 static const unsigned VRES_HRES_BPR[8] = { 16, 20, 32, 40, 64, 80, 128, 160 };
-static const unsigned VRES_HRES_BPR_TEXT[8] = { 32, 40, 32, 40, 64, 80, 64, 80 };
 
 // I imagine lines per rows counting in GIME modes to work by maintaining row
 // as a 4-bit counter and having selected bits ANDed together to flag reset.
@@ -1374,24 +1374,15 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 			}
 
 		} else {
-			// CoCo 3 mode
+			// CoCo 3 mode.  Text vs graphics is live $FF98 BP —
+			// $FF99 $11/$15 (HRES 4/5) stay CGROM when BP=0.
 			uint_fast8_t vdata = fetch_byte_vram(gime);
 			unsigned font_row = (gime->row + 1) & 0x0f;
 			if (font_row > 11) {
 				font_row = 0;
 			}
-			if (gime->BP) {
-				// CoCo 3 graphics
-				gdata = vdata;
-				// 16 colour, 16 byte-per-row modes zero the second
-				// half of the data
-				if (gime->HRES == 0 && gime->CRES >= 2) {
-					gime->vdata_cache = 0;
-				}
-			} else {
-				// CoCo 3 text
-				int c = vdata & 0x7f;
-				gdata = font_gime[c*12+font_row];
+			if (gime_is_native_text(gime->registers[0], gime->registers[8])) {
+				gdata = font_gime[(vdata & 0x7f)*12+font_row];
 				if (gime->CRES & 1) {
 					uint_fast8_t attr = fetch_byte_vram(gime);
 					fg_colour = 8 | ((attr >> 3) & 7);
@@ -1403,6 +1394,11 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 				} else {
 					fg_colour = 1;
 					bg_colour = 0;
+				}
+			} else {
+				gdata = vdata;
+				if (gime->HRES == 0 && gime->CRES >= 2) {
+					gime->vdata_cache = 0;
 				}
 			}
 			render_mode = TCC1014_RENDER_RG;
@@ -1447,7 +1443,13 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 				// the user is viewing.
 				uint_fast8_t cmask = (gime->MOCH && gime->want_composite) ? 0x30 : 0x3f;
 
-				if (gime->BP) {
+				if (gime_is_native_text(gime->registers[0], gime->registers[8])) {
+					/* 1-bit CGROM, including HRES 4/5 (WIDTH 64/80). */
+					c0 = gime->palette_reg[(gdata&0x80)?fg_colour:bg_colour] & cmask;
+					c1 = gime->palette_reg[(gdata&0x40)?fg_colour:bg_colour] & cmask;
+					c2 = gime->palette_reg[(gdata&0x20)?fg_colour:bg_colour] & cmask;
+					c3 = gime->palette_reg[(gdata&0x10)?fg_colour:bg_colour] & cmask;
+				} else {
 					switch (gime->CRES) {
 					case 0: default:
 						c0 = gime->palette_reg[(gdata>>7)&1] & cmask;
@@ -1465,12 +1467,6 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 						c0 = c1 = c2 = c3 = gime->palette_reg[(gdata>>4)&15] & cmask;
 						break;
 					}
-
-				} else {
-					c0 = gime->palette_reg[(gdata&0x80)?fg_colour:bg_colour] & cmask;
-					c1 = gime->palette_reg[(gdata&0x40)?fg_colour:bg_colour] & cmask;
-					c2 = gime->palette_reg[(gdata&0x20)?fg_colour:bg_colour] & cmask;
-					c3 = gime->palette_reg[(gdata&0x10)?fg_colour:bg_colour] & cmask;
 				}
 				gdata <<= 4;
 			}
@@ -1604,10 +1600,14 @@ static void update_from_gime_registers(struct TCC1014_private *gime) {
 		// Bytes per row, render resolution
 		if (gime->BP) {
 			gime->BPR = VRES_HRES_BPR[gime->HRES];
-			gime->resolution = gime->HRES >> 1;
+			gime->resolution = gime_graphics_resolution(gime->HRES);
 		} else {
-			gime->BPR = VRES_HRES_BPR_TEXT[gime->HRES];
-			gime->resolution = (gime->HRES & 4) ? 2 : 1;
+			/* WIDTH 40: HRES=1 → res 1 (16 px).  WIDTH 64/80:
+			 * HRES=4/5 → res 2 (8 px).  Never use HRES>>1 here —
+			 * that is the graphics formula and $FF99=$15 is
+			 * HSCREEN 1 only when BP=1. */
+			gime->BPR = gime_text_bpr(gime->HRES);
+			gime->resolution = gime_text_resolution(gime->HRES);
 		}
 
 		// Line counts
