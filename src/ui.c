@@ -67,8 +67,9 @@ struct module *filereq_module = NULL;
 // UI modules
 //
 // Default is the first built module.  On Apple, GTK+ 3 typically yields a
-// blank/white window, so Cocoa (SDL2) and the basic SDL UI (SDL3 `-ui sdl`)
-// come first.  There is no module named `sdl2`.
+// blank/white window, so Cocoa (`-ui macosx`) and the basic SDL UI come
+// first.  With SDL3, both use SDL3 video and the Cocoa menu bar.  There is
+// no module named `sdl2`.
 
 extern struct ui_module ui_gtk3_module;
 extern struct ui_module ui_gtk2_module;

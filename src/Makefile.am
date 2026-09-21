@@ -440,18 +440,22 @@ endif
 
 endif
 
-# Mac OS X special case SDL user interface
+# Mac OS X Cocoa menu bar.
+# SDL3 video when that backend is selected; SDL2 otherwise.
+# NSMenu is installed for both `-ui macosx` and (SDL3) `-ui sdl`.
 
-if UI_SDL2
 if UI_COCOA
 xroar_CFLAGS += $(COCOA_CFLAGS)
-xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL_CFLAGS)
 xroar_LDADD += $(COCOA_LIBS)
+if UI_SDL3
+xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL3_CFLAGS)
+else
+xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL_CFLAGS)
+endif
 xroar_SOURCES += \
 	macosx/filereq_cocoa.m \
 	macosx/hkbd_darwin.c macosx/hkbd_darwin.h \
 	macosx/ui_macosx.m macosx/ui_macosx.h
-endif
 endif
 
 EXTRA_DIST += \
