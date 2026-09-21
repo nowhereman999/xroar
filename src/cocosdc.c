@@ -9,6 +9,10 @@
  *  / SDC_Play.asm (open/stream/abort; DAC timing is not in this layer).
  *  When $FF40 is not $43, WD1773-ish FDC registers serve SDC-DOS Disk BASIC
  *  LOAD/RUN/LOADM on an M: mounted DSK.  STARTUP.CFG auto-mounts at attach.
+ *  -cart-becker (the existing cart flag) opens the Becker port on P2
+ *  $FF41 (status) and $FF42 (data) so FujiNet-PC can sit beside -sdc-root.
+ *  $FF42 is also the flash data helper; Becker wins while the port is
+ *  open.  $FF43 flash bank and $FF40/$FF48–$FF4B SDC/FDC are unchanged.
  *  The built-in profile defaults cart-rom @sdcdos (sdcdos.rom on the ROM
  *  path) so Hardware → Cartridge → CoCoSDC and CLI -cart cocosdc both boot
  *  SDC-DOS when that image is present.  -cart-rom still overrides.
@@ -41,6 +45,7 @@
 #include "sds.h"
 #include "xalloc.h"
 
+#include "becker.h"
 #include "cart.h"
 #include "cocosdc_fdc.h"
 #include "cocosdc_fs.h"
@@ -61,6 +66,7 @@ struct cocosdc {
 	char *root;
 	uint8_t flash_data;
 	uint8_t flash_bank;
+	struct becker *becker;
 };
 
 #define COCOSDC_SER_HW_BLOCK (10)
@@ -207,11 +213,31 @@ static bool cocosdc_finish(struct part *p) {
 	}
 	cocosdc_apply_root(sdc);
 
+	/* Same flag as rsdos/mooh/idecart.  becker_open() uses -becker-ip /
+	 * -becker-port (default 127.0.0.1:65504).  A failed connect leaves
+	 * the pointer NULL so $FF42 stays the flash data helper. */
+	if (c->config && c->config->becker_port) {
+		sdc->becker = becker_open();
+		if (sdc->becker) {
+			LOG_MOD_DEBUG(1, "cocosdc",
+				      "Becker port open ($FF41 status, $FF42 data; "
+				      "flash data at $FF42 yields to Becker)\n");
+		}
+#ifndef WANT_BECKER
+		else {
+			LOG_MOD_WARN("cocosdc",
+				     "-cart-becker set but this build has no Becker support\n");
+		}
+#endif
+	}
+
 	return 1;
 }
 
 static void cocosdc_free(struct part *p) {
 	struct cocosdc *sdc = (struct cocosdc *)p;
+	becker_close(sdc->becker);
+	sdc->becker = NULL;
 	sdc_fs_flush(&sdc->fs);
 	sdc_fs_free(&sdc->fs);
 	free(sdc->root);
@@ -516,19 +542,6 @@ static void cocosdc_update_lines(struct cocosdc *sdc) {
 	DELEGATE_CALL(c->signal_nmi, sdc_fdc_want_nmi(&sdc->fdc) ? 1 : 0);
 }
 
-static int cocosdc_flash_reg(uint16_t A) {
-	if ((A & 0xfff0) != 0xff40) {
-		return -1;
-	}
-	switch (A & 0x0f) {
-	case 0x02:
-	case 0x03:
-		return (int)(A & 0x0f);
-	default:
-		return -1;
-	}
-}
-
 static uint8_t cocosdc_flash_read(struct cocosdc *sdc, int reg) {
 	if (reg == 0x02) {
 		return sdc->flash_data;
@@ -554,6 +567,9 @@ static void cocosdc_reset(struct cart *c, bool hard) {
 		sdc_fs_reset(&sdc->fs);
 		(void)cocosdc_apply_startup(sdc, "hard reset");
 	}
+	if (sdc->becker) {
+		becker_reset(sdc->becker);
+	}
 	cocosdc_update_lines(sdc);
 }
 
@@ -571,12 +587,15 @@ static void cocosdc_attach(struct cart *c) {
 static void cocosdc_detach(struct cart *c) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
 	sdc_fs_flush(&sdc->fs);
+	if (sdc->becker) {
+		becker_reset(sdc->becker);
+	}
 	cart_rom_detach(c);
 }
 
 static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_t D) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
-	int flash;
+	int cls;
 	int reg;
 
 	if (R2) {
@@ -587,9 +606,18 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 		return D;
 	}
 
-	flash = cocosdc_flash_reg(A);
-	if (flash >= 0) {
-		return cocosdc_flash_read(sdc, flash);
+	/* Becker before flash so $FF42 talks to FujiNet when -cart-becker
+	 * connected.  SDC registers are classified separately and fall
+	 * through below. */
+	cls = cocosdc_p2_class(A, sdc->becker != NULL);
+	if (cls == COCOSDC_P2_BECKER_STATUS) {
+		return becker_read_status(sdc->becker);
+	}
+	if (cls == COCOSDC_P2_BECKER_DATA) {
+		return becker_read_data(sdc->becker);
+	}
+	if (cls == COCOSDC_P2_FLASH) {
+		return cocosdc_flash_read(sdc, (int)(A & 0x0f));
 	}
 
 	reg = sdc_hw_reg(A);
@@ -611,7 +639,7 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 
 static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8_t D) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
-	int flash;
+	int cls;
 	int reg;
 
 	if (R2) {
@@ -622,9 +650,17 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 		return D;
 	}
 
-	flash = cocosdc_flash_reg(A);
-	if (flash >= 0) {
-		cocosdc_flash_write(sdc, flash, D);
+	cls = cocosdc_p2_class(A, sdc->becker != NULL);
+	if (cls == COCOSDC_P2_BECKER_DATA) {
+		becker_write_data(sdc->becker, D);
+		return D;
+	}
+	if (cls == COCOSDC_P2_BECKER_STATUS) {
+		/* Status is read-only, same as rsdos. */
+		return D;
+	}
+	if (cls == COCOSDC_P2_FLASH) {
+		cocosdc_flash_write(sdc, (int)(A & 0x0f), D);
 		return D;
 	}
 

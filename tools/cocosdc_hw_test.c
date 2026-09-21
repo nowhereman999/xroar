@@ -142,6 +142,51 @@ int main(void) {
 		nfail += fail("address decode");
 	}
 
+	/* Becker off: $FF41 unused, $FF42/$FF43 flash, SDC registers stay SDC.
+	 * Becker on: $FF41/$FF42 (and RS-DOS mirrors $FF45/$FF46) are Becker;
+	 * $FF42 wins over flash data; $FF43 stays flash; $FF40/$FF48–$FF4B
+	 * stay SDC even though $FF49/$FF4A share Becker's low address bits. */
+	{
+		static const struct {
+			uint16_t A;
+			int becker;
+			int cls;
+		} map[] = {
+			{ 0xff40, 0, COCOSDC_P2_SDC },
+			{ 0xff41, 0, COCOSDC_P2_OTHER },
+			{ 0xff42, 0, COCOSDC_P2_FLASH },
+			{ 0xff43, 0, COCOSDC_P2_FLASH },
+			{ 0xff45, 0, COCOSDC_P2_OTHER },
+			{ 0xff46, 0, COCOSDC_P2_OTHER },
+			{ 0xff48, 0, COCOSDC_P2_SDC },
+			{ 0xff49, 0, COCOSDC_P2_SDC },
+			{ 0xff4a, 0, COCOSDC_P2_SDC },
+			{ 0xff4b, 0, COCOSDC_P2_SDC },
+			{ 0xff40, 1, COCOSDC_P2_SDC },
+			{ 0xff41, 1, COCOSDC_P2_BECKER_STATUS },
+			{ 0xff42, 1, COCOSDC_P2_BECKER_DATA },
+			{ 0xff43, 1, COCOSDC_P2_FLASH },
+			{ 0xff45, 1, COCOSDC_P2_BECKER_STATUS },
+			{ 0xff46, 1, COCOSDC_P2_BECKER_DATA },
+			{ 0xff48, 1, COCOSDC_P2_SDC },
+			{ 0xff49, 1, COCOSDC_P2_SDC },
+			{ 0xff4a, 1, COCOSDC_P2_SDC },
+			{ 0xff4b, 1, COCOSDC_P2_SDC },
+			{ 0xff51, 1, COCOSDC_P2_OTHER },
+			{ 0xff52, 1, COCOSDC_P2_OTHER },
+		};
+		unsigned i;
+		for (i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+			int got = cocosdc_p2_class(map[i].A, map[i].becker);
+			if (got != map[i].cls) {
+				fprintf(stderr,
+					"FAIL: P2 $%04X becker=%d class %d, expected %d\n",
+					map[i].A, map[i].becker, got, map[i].cls);
+				nfail++;
+			}
+		}
+	}
+
 	/* LSN is latched at command write; $FF4A/$FF4B then carry the data block. */
 	{
 		uint8_t fill[SDC_BLOCK_SIZE];
@@ -255,6 +300,6 @@ int main(void) {
 		fprintf(stderr, "%d test(s) failed\n", nfail);
 		return 1;
 	}
-		puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET/latch/RX/stream-sector/Play-abort ok");
+		puts("cocosdc_hw: CommSDC probe/VERSION/MOUNT/RESET/latch/RX/stream-sector/Play-abort/becker-decode ok");
 	return 0;
 }
