@@ -327,4 +327,53 @@ static inline void sdc_hw_write(struct sdc_hw *h, int reg, uint8_t D) {
 	}
 }
 
+/* Optional Becker / DriveWire / FujiNet port on the CoCoSDC cart.
+ *
+ * Same partial decode as rsdos.c once A3 is clear: (A&3)==1 is status,
+ * (A&3)==2 is data.  Inside the $FF40 page that is $FF41/$FF45 and
+ * $FF42/$FF46.  $FF48–$FF4F (A3 set) stay SDC/FDC, so $FF49/$FF4A are
+ * never Becker even though their low bits match.
+ *
+ * $FF42 is also the flash data helper.  When -cart-becker is active,
+ * Becker wins and flash data is not read or written.  $FF43 stays the
+ * flash bank probe.  With Becker off, $FF41 is unused and $FF42/$FF43
+ * stay flash.
+ *
+ * becker_active is true only when the port actually opened. */
+
+enum {
+	COCOSDC_P2_OTHER = 0,
+	COCOSDC_P2_SDC = 1,
+	COCOSDC_P2_FLASH = 2,
+	COCOSDC_P2_BECKER_STATUS = 3,
+	COCOSDC_P2_BECKER_DATA = 4
+};
+
+static inline int cocosdc_p2_class(uint16_t A, int becker_active) {
+	if (sdc_hw_reg(A) >= 0) {
+		return COCOSDC_P2_SDC;
+	}
+	/* $FF40–$FF47 only.  A3 selects the SDC/FDC block, as in rsdos. */
+	if (becker_active && (A & 0xfff8) == 0xff40) {
+		switch (A & 3) {
+		case 1:
+			return COCOSDC_P2_BECKER_STATUS;
+		case 2:
+			return COCOSDC_P2_BECKER_DATA;
+		default:
+			break;
+		}
+	}
+	if ((A & 0xfff0) == 0xff40) {
+		switch (A & 0x0f) {
+		case 0x02:
+		case 0x03:
+			return COCOSDC_P2_FLASH;
+		default:
+			break;
+		}
+	}
+	return COCOSDC_P2_OTHER;
+}
+
 #endif

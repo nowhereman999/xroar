@@ -108,6 +108,40 @@ MPI: insert the profile into a slot as with any other cart
 (`-cart mpi -mpi-load-cart cocosdc`).  SCS (`$FF40–$FF5F`) follows the MPI
 P2 routing like RS-DOS.
 
+### FujiNet / Becker port (`-cart-becker`)
+
+Studio FujiNet management already works on the Floppy cart because RS-DOS
+opens the Becker port when `-cart-becker` is set.  CoCoSDC uses the same
+flag (not a new option) and the same `-becker-ip` / `-becker-port`
+endpoint, default `127.0.0.1:65504`.  Without `-cart-becker`, CoCoSDC I/O
+is unchanged.
+
+```text
+xroar -machine coco3 -cart cocosdc -cart-becker \
+  -becker-ip 127.0.0.1 -becker-port 65504 \
+  -sdc-root /path/to/sdcard
+```
+
+`-sdc-root` stays attached.  P2 `$FF41` is Becker status and `$FF42` is
+Becker data (FujiNet `FN_INIT`), including the RS-DOS mirrors `$FF45` /
+`$FF46`.  **`$FF42` is also the flash data helper.**  While the Becker
+port is open, Becker wins on `$FF42` and flash data is not read or
+written.  `$FF43` remains the flash bank probe.  `$FF40` and
+`$FF48`–`$FF4B` stay SDC/FDC (a plain `A&3` decode would have stolen
+`$FF49`/`$FF4A`).
+
+At default verbosity a successful open prints
+`[cocosdc] Becker port open ($FF41 status, $FF42 data; ...)`.
+Connect failures still come from the existing Becker logger
+(`[becker] connect … failed`).  A build configured `--disable-becker`
+warns and leaves `$FF42` as flash data.
+
+Manual check: run FujiNet-PC on `127.0.0.1:65504`, start XRoar with the
+argv above, and confirm `FN_INIT` no longer returns error 3.  Then repeat
+without `-cart-becker` and confirm SDC `DIR` / `-sdc-root` still work and
+`$FF42` reads back flash data.  Host decode coverage (no socket) is in
+`./tools/run-cocosdc-tests.sh` (`cocosdc_p2_class`).
+
 ### SDC-DOS ROM (menu vs CLI)
 
 | Path | ROM used |
@@ -331,6 +365,9 @@ Hardware, as used by `CommSDC`:
 | Address | Role |
 | --- | --- |
 | `$FF40` write | `$43` enters command mode; `$00` leaves it (params are kept) |
+| `$FF41` | Free unless `-cart-becker` opened the Becker port (status; FujiNet `FN_INIT`) |
+| `$FF42` | Flash data helper.  Becker data when `-cart-becker` is connected (Becker wins) |
+| `$FF43` | Flash bank probe (bank in bits 0–2).  Not used by Becker |
 | `$FF48` read | Status: `BUSY` bit 0, `READY` bit 1, `FAILED` bit 7 |
 | `$FF48` write | Command (command mode only) |
 | `$FF49` | Parameter 1 (LSN high / subcommand).  Latched when the command is written — `$FF4A/$FF4B` are then the 256-byte data port. |
@@ -384,7 +421,8 @@ Command-mode behaviour:
 | Play DAC / analog mux (`$FF20`) | | **Not in host tests** — register/stream contract only; 44750 Hz playback needs a live emulator |
 | CSM media-player menu / extra opcodes | | **Not used by Studio Play/FileAccess** (`.CSM` is a file format that also streams with `$90`) |
 | Floppy-emulation mode (non-`$43` latch) | | **Implemented** — WD1773-ish restore/seek/read/write sector on an `M:`/`N:` image.  Type I completes `!BUSY` **without** INTRQ (DECB polls status after Seek; an instant NMI with `$FF40` bit 5 on returns empty `DIR` + `SAVE` that never hits the host file).  Unmounted or `m:` raw Type II stays `BUSY\|NOTREADY` **without** INTRQ so DECB’s DRQ poll times out (`?IO ERROR`).  Type II complete status is 0 (not Type I `TRACK0`/`$04`).  Write-track (`$F0`/`$F4`, DSKINI) fills that track’s 18 sectors with `$FF` in the same host `FILE*`.  `$FF40` bit 5 gates INTRQ→NMI; bit 7 is HALT (never asserted mid-sector).  While DRQ is set, `$FF4A` and `$FF4B` both supply data (`LDU $FF4A`).  SDF / copy-protection not emulated |
-| `$FF43` flash bank probe | | **Stub** — returns bank 0 (enough for SDC-DOS to see an SDC) |
+| `$FF41` / `$FF42` Becker (FujiNet `FN_INIT`) | | **Optional** — only when `-cart-becker` connects.  `$FF42` then wins over flash data.  Off by default |
+| `$FF43` flash bank probe | | **Stub** — returns bank 0 (enough for SDC-DOS to see an SDC).  Unchanged when Becker is on |
 
 Files mounted with `m:` / `n:` are a raw array of 256-byte blocks (the
 FileAccess model).  **`M:` / `N:`** mount a floppy or hard-disk image:
