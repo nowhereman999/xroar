@@ -26,7 +26,11 @@
 
 #include "top-config.h"
 
+#ifdef HAVE_SDL3
+#include <SDL3/SDL.h>
+#else
 #include <SDL.h>
+#endif
 #include <sys/param.h> /* for MAXPATHLEN */
 #include <unistd.h>
 
@@ -52,7 +56,22 @@
 #include "vo.h"
 #include "vo_render.h"
 #include "xroar.h"
+
+/* SDL3 keeps the same NSMenu bar the SDL2 Cocoa UI built.  Event names
+ * differ; the menu actions do not.  Creating NSApp before SDL_Init is what
+ * stops SDL from installing its own empty menu (it only does that when
+ * mainMenu is still nil). */
+#ifdef HAVE_SDL3
+#include "sdl3/common.h"
+#define uimac_sdl_global global_uisdl3
+#define UIMAC_KEYDOWN SDL_EVENT_KEY_DOWN
+#define UIMAC_QUIT SDL_EVENT_QUIT
+#else
 #include "sdl2/common.h"
+#define uimac_sdl_global global_uisdl2
+#define UIMAC_KEYDOWN SDL_KEYDOWN
+#define UIMAC_QUIT SDL_QUIT
+#endif
 
 #include "macosx/ui_macosx.h"
 
@@ -118,6 +137,11 @@ int cocoa_super_all_keys = 0;
 @implementation XRoarApplication
 
 - (void)sendEvent:(NSEvent *)anEvent {
+	/* Non-command keys are not forwarded.  SDL3 (like SDL2) still records
+	 * them in Cocoa_PumpEvents when this process created NSApp itself:
+	 * s_bShouldHandleEventsInSDLApplication stays false, so the pump calls
+	 * Cocoa_DispatchEvent before sendEvent.  Command keys are forwarded so
+	 * NSMenu shortcuts run, then do_set_state flushes that SDL key. */
 	switch ([anEvent type]) {
 		case NSEventTypeKeyDown:
 		case NSEventTypeKeyUp:
@@ -149,7 +173,7 @@ int cocoa_super_all_keys = 0;
 	// Try and ensure that the keydown event that (maybe) caused this
 	// menuitem dispatch is not then handled by the main loop as well.
 	SDL_PumpEvents();
-	SDL_FlushEvent(SDL_KEYDOWN);
+	SDL_FlushEvent(UIMAC_KEYDOWN);
 
 	switch (tag) {
 
@@ -158,8 +182,8 @@ int cocoa_super_all_keys = 0;
 		switch (value) {
 		case ui_action_quit:
 			{
-				SDL_Event event;
-				event.type = SDL_QUIT;
+				SDL_Event event = { 0 };
+				event.type = UIMAC_QUIT;
 				SDL_PushEvent(&event);
 			}
 			break;
@@ -295,7 +319,7 @@ int cocoa_super_all_keys = 0;
 	// Printers:
 	case ui_tag_print_destination:
 		if (value == PRINTER_DESTINATION_FILE) {
-			char *filename = DELEGATE_CALL(global_uisdl2->ui_interface.filereq_interface->save_filename, "Print to file");
+			char *filename = DELEGATE_CALL(uimac_sdl_global->ui_interface.filereq_interface->save_filename, "Print to file");
 			if (filename) {
 				ui_update_state(-1, ui_tag_print_file, 0, filename);
 				free(filename);
@@ -375,7 +399,10 @@ int cocoa_super_all_keys = 0;
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
-	struct ui_macosx_interface *uimac = (struct ui_macosx_interface *)global_uisdl2;
+	struct ui_macosx_interface *uimac = (struct ui_macosx_interface *)uimac_sdl_global;
+	if (!uimac) {
+		return YES;
+	}
 
 	int item_tag = [item tag];
 	int tag = UIMAC_TAG_TYPE(item_tag);
@@ -1230,11 +1257,15 @@ int main(int argc, char **argv) {
 
 // XRoar UI definition
 
-static void *ui_cocoa_new(void *cfg);
+void *ui_cocoa_new(void *cfg);
 static void ui_cocoa_free(void *);
 
 struct ui_module ui_cocoa_module = {
+#ifdef HAVE_SDL3
+	.common = { .name = "macosx", .description = "Mac OS X Cocoa menus (SDL3)",
+#else
 	.common = { .name = "macosx", .description = "Mac OS X+ SDL2 UI",
+#endif
 		.new = ui_cocoa_new,
 	},
 	.joystick_module_list = sdl_js_modlist,
@@ -1245,7 +1276,7 @@ static void cocoa_update_cartridge_menu(void *);
 static void cocoa_update_joystick_menus(void *);
 static void cocoa_ui_state_notify(void *, int tag, void *smsg);
 
-static void *ui_cocoa_new(void *cfg) {
+void *ui_cocoa_new(void *cfg) {
 	struct ui_cfg *ui_cfg = cfg;
 
 	cocoa_register_app();
@@ -1255,9 +1286,13 @@ static void *ui_cocoa_new(void *cfg) {
 		return NULL;
 	}
 	*uimac = (struct ui_macosx_interface){0};
-	struct ui_sdl2_interface *uisdl2 = &uimac->ui_sdl2_interface;
-	ui_sdl_init(uisdl2, ui_cfg);
-	struct ui_interface *ui = &uisdl2->ui_interface;
+#ifdef HAVE_SDL3
+	struct ui_sdl3_interface *uisdl = &uimac->ui_sdl_interface;
+#else
+	struct ui_sdl2_interface *uisdl = &uimac->ui_sdl_interface;
+#endif
+	ui_sdl_init(uisdl, ui_cfg);
+	struct ui_interface *ui = &uisdl->ui_interface;
 	ui->free = DELEGATE_AS0(void, ui_cocoa_free, uimac);
 	ui->update_machine_menu = DELEGATE_AS0(void, cocoa_update_machine_menu, uimac);
 	ui->update_cartridge_menu = DELEGATE_AS0(void, cocoa_update_cartridge_menu, uimac);
@@ -1294,16 +1329,16 @@ static void *ui_cocoa_new(void *cfg) {
 	ui_messenger_join_group(uimac->msgr_client_id, ui_tag_ratelimit_latch, MESSENGER_NOTIFY_DELEGATE(cocoa_ui_state_notify, uimac));
 	ui_messenger_join_group(uimac->msgr_client_id, ui_tag_config_autosave, MESSENGER_NOTIFY_DELEGATE(cocoa_ui_state_notify, uimac));
 
-	cocoa_update_machine_menu(uisdl2);
-	cocoa_update_cartridge_menu(uisdl2);
-	cocoa_update_joystick_menus(uisdl2);
+	cocoa_update_machine_menu(uisdl);
+	cocoa_update_cartridge_menu(uisdl);
+	cocoa_update_joystick_menus(uisdl);
 
-	if (!sdl_vo_init(uisdl2)) {
-		free(uisdl2);
+	if (!sdl_vo_init(uisdl)) {
+		free(uisdl);
 		return NULL;
 	}
 
-	return uisdl2;
+	return uisdl;
 }
 
 static void ui_cocoa_free(void *sptr) {
