@@ -1,0 +1,1723 @@
+/* Host-side CommSDC + sdc_fs against a temporary -sdc-root.
+ *
+ * Mirrors SDC_Comm.asm waitForIt / 256-byte $FF4A/$FF4B transfers and the
+ * FileAccess commands Phase B implements (mount, dir/info/CWD, LSN R/W)
+ * plus Phase C stream ($90/$91 512-byte sectors, abort $D0) as used by
+ * SDC_StreamFile_Library.asm / SDC_BigLoadm.asm, and Phase D Play
+ * (SDC_Play.asm open/stream/interleaved 512 / $D0 / CLR $FF40).
+ *
+ * Compile / run (no XRoar, no SDL):
+ *   ./tools/run-cocosdc-tests.sh
+ */
+#define _DEFAULT_SOURCE
+
+#include <dirent.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "cocosdc_fdc.h"
+#include "cocosdc_fs.h"
+#include "cocosdc_hw.h"
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+static struct sdc_fs fs;
+static struct sdc_hw hw;
+static uint8_t last_status;
+static int last_wait;
+static int nfail;
+static int ncheck;
+static char root_path[PATH_MAX];
+
+static void put_cmd(uint8_t *block, const char *s);
+
+static int check(int cond, const char *msg) {
+	ncheck++;
+	if (!cond) {
+		fprintf(stderr, "FAIL: %s (status=$%02X wait=%d)\n",
+			msg, last_status, last_wait);
+		nfail++;
+		return 0;
+	}
+	return 1;
+}
+
+static int wait_for_it(void) {
+	last_status = sdc_hw_read(&hw, 0x08);
+	if (last_status & SDC_FAILED) {
+		return -1;
+	}
+	if (!(last_status & SDC_BUSY)) {
+		return 0;
+	}
+	if (last_status & SDC_READY) {
+		return 1;
+	}
+	return -1;
+}
+
+static void pump(void) {
+	sdc_fs_execute(&fs, &hw);
+}
+
+static void leave_cmd(void) {
+	sdc_hw_write(&hw, 0x00, 0);
+}
+
+/* StreamFile / BIGLOADM: not CommSDC.  $90 is READY per 512-byte sector. */
+static int stream_start(uint8_t cmd, uint32_t lsn) {
+	sdc_hw_write(&hw, 0x00, SDC_CMDMODE);
+	sdc_hw_write(&hw, 0x09, (uint8_t)(lsn >> 16));
+	sdc_hw_write(&hw, 0x0a, (uint8_t)(lsn >> 8));
+	sdc_hw_write(&hw, 0x0b, (uint8_t)lsn);
+	last_wait = wait_for_it();
+	if (last_wait < 0) {
+		leave_cmd();
+		return -1;
+	}
+	sdc_hw_write(&hw, 0x08, cmd);
+	pump();
+	last_wait = wait_for_it();
+	return last_wait;
+}
+
+/* Read one 512-byte stream sector (LDD $FF4A / LDU ,Y style).  pump() after
+ * each DATREG read so the last byte can refill or clear BUSY (cart path). */
+static int stream_read_512(uint8_t *buf) {
+	int i;
+
+	for (i = 0; i < (int)SDC_STREAM_SIZE; i++) {
+		buf[i] = sdc_hw_read(&hw, (i & 1) ? 0x0b : 0x0a);
+		pump();
+	}
+	last_wait = wait_for_it();
+	return last_wait;
+}
+
+static void stream_abort(void) {
+	sdc_hw_write(&hw, 0x08, 0xd0);
+	pump();
+	last_wait = wait_for_it();
+}
+
+/* Play.asm: LDA $FF48 / ASRA / LBCC eof / BEQ wait.
+ *  0 = not busy (EOF), 1 = BUSY|READY (proceed), -1 = wait / fail. */
+static int play_asra(void) {
+	last_status = sdc_hw_read(&hw, 0x08);
+	if (last_status & SDC_FAILED) {
+		return -1;
+	}
+	if (!(last_status & SDC_BUSY)) {
+		return 0;
+	}
+	if (last_status & SDC_READY) {
+		return 1;
+	}
+	return -1;
+}
+
+/* LDU <$4A / LDD $FF4A: high from $FF4A, low from $FF4B.  pump() after each
+ * DATREG read so the last byte of a sector refills like the cart. */
+static uint16_t play_ldd_ff4a(void) {
+	uint8_t hi = sdc_hw_read(&hw, 0x0a);
+	pump();
+	uint8_t lo = sdc_hw_read(&hw, 0x0b);
+	pump();
+	return (uint16_t)(((uint16_t)hi << 8) | lo);
+}
+
+static void play_read_512_words(uint8_t *buf) {
+	int i;
+
+	for (i = 0; i < (int)(SDC_STREAM_SIZE / 2); i++) {
+		uint16_t w = play_ldd_ff4a();
+		buf[i * 2] = (uint8_t)(w >> 8);
+		buf[i * 2 + 1] = (uint8_t)w;
+	}
+	last_wait = wait_for_it();
+}
+
+/* OpenSDC_File_X_At_Start (StreamFile / Play): stay in command mode between
+ * $E0/$E1 mount and $90/$91.  Play defaults SDC_DriveNumber to 1. */
+static int open_sdc_file_x_at_start(uint8_t drive, const char *m_path) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	int i;
+
+	sdc_hw_write(&hw, 0x00, SDC_CMDMODE);
+	last_wait = wait_for_it();
+	if (last_wait < 0 || (last_status & SDC_BUSY)) {
+		leave_cmd();
+		return -1;
+	}
+	sdc_hw_write(&hw, 0x08, (uint8_t)(0xe0 + (drive & 1)));
+	pump();
+	last_wait = wait_for_it();
+	if (last_wait != 1) {
+		leave_cmd();
+		return -1;
+	}
+	put_cmd(block, m_path);
+	for (i = 0; i < (int)SDC_BLOCK_SIZE; i++) {
+		sdc_hw_write(&hw, (i & 1) ? 0x0b : 0x0a, block[i]);
+	}
+	pump();
+	last_wait = wait_for_it();
+	if (last_wait < 0 || (last_status & SDC_BUSY)) {
+		leave_cmd();
+		return -1;
+	}
+	/* 24-bit LSN 0, then $43 again, then stream (OpenSDC_File_X). */
+	sdc_hw_write(&hw, 0x09, 0);
+	sdc_hw_write(&hw, 0x0a, 0);
+	sdc_hw_write(&hw, 0x0b, 0);
+	sdc_hw_write(&hw, 0x00, SDC_CMDMODE);
+	last_wait = wait_for_it();
+	if (last_wait < 0 || (last_status & SDC_BUSY)) {
+		leave_cmd();
+		return -1;
+	}
+	sdc_hw_write(&hw, 0x08, (uint8_t)(0x90 + (drive & 1)));
+	pump();
+	last_wait = wait_for_it();
+	return last_wait;
+}
+
+/* CommSDC: A=cmd, B=param1, X=param2/3, optional 256-byte buffer. */
+static int comm_sdc(uint8_t cmd, uint8_t b, uint16_t x, uint8_t *buf, int have_buf) {
+	sdc_hw_write(&hw, 0x00, SDC_CMDMODE);
+	sdc_hw_write(&hw, 0x09, b);
+	sdc_hw_write(&hw, 0x0a, (uint8_t)(x >> 8));
+	sdc_hw_write(&hw, 0x0b, (uint8_t)(x & 0xff));
+	last_wait = wait_for_it();
+	if (last_wait < 0) {
+		leave_cmd();
+		return -1;
+	}
+	sdc_hw_write(&hw, 0x08, cmd);
+	pump();
+	if (cmd & 0x20) {
+		last_wait = wait_for_it();
+		if (last_wait != 1) {
+			leave_cmd();
+			return -1;
+		}
+		for (int i = 0; i < SDC_BLOCK_SIZE; i++) {
+			uint8_t v = buf ? buf[i] : 0;
+			sdc_hw_write(&hw, (i & 1) ? 0x0b : 0x0a, v);
+		}
+		pump();
+		last_wait = wait_for_it();
+		if (last_wait < 0 || (last_status & SDC_BUSY)) {
+			leave_cmd();
+			return -1;
+		}
+	} else {
+		last_wait = wait_for_it();
+		if (last_wait < 0) {
+			leave_cmd();
+			return -1;
+		}
+		if (last_wait == 1 && have_buf && buf) {
+			for (int i = 0; i < SDC_BLOCK_SIZE; i++) {
+				buf[i] = sdc_hw_read(&hw, (i & 1) ? 0x0b : 0x0a);
+			}
+			last_status = sdc_hw_read(&hw, 0x08);
+		}
+	}
+	leave_cmd();
+	return 0;
+}
+
+static void put_cmd(uint8_t *block, const char *s) {
+	size_t n = strlen(s);
+	memset(block, 0, SDC_BLOCK_SIZE);
+	if (n >= SDC_BLOCK_SIZE) {
+		n = SDC_BLOCK_SIZE - 1;
+	}
+	memcpy(block, s, n);
+}
+
+static int write_file(const char *path, const void *data, size_t n) {
+	FILE *f = fopen(path, "wb");
+	if (!f) {
+		return -1;
+	}
+	if (n && fwrite(data, 1, n, f) != n) {
+		fclose(f);
+		return -1;
+	}
+	fclose(f);
+	return 0;
+}
+
+static int rm_path(const char *path) {
+	DIR *d = opendir(path);
+	if (d) {
+		struct dirent *de;
+		while ((de = readdir(d)) != NULL) {
+			char child[PATH_MAX];
+			if (de->d_name[0] == '.' &&
+			    (de->d_name[1] == 0 ||
+			     (de->d_name[1] == '.' && de->d_name[2] == 0))) {
+				continue;
+			}
+			if (snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >=
+			    (int)sizeof(child)) {
+				closedir(d);
+				return -1;
+			}
+			rm_path(child);
+		}
+		closedir(d);
+		return rmdir(path);
+	}
+	return unlink(path);
+}
+
+static int host_size(const char *rel, long *out) {
+	char path[PATH_MAX];
+	struct stat st;
+	if (snprintf(path, sizeof(path), "%s/%s", root_path, rel) >= (int)sizeof(path)) {
+		return -1;
+	}
+	if (stat(path, &st) != 0) {
+		return -1;
+	}
+	*out = (long)st.st_size;
+	return 0;
+}
+
+static int rec_named(const uint8_t *page, const char *fat11) {
+	for (int i = 0; i < 16; i++) {
+		const uint8_t *r = page + i * 16;
+		if (r[0] == 0) {
+			break;
+		}
+		if (memcmp(r, fat11, 11) == 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static uint32_t le32(const uint8_t *p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+	       ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint32_t be32(const uint8_t *p) {
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+	       ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static int failed_bits(uint8_t bits) {
+	return (last_status & SDC_FAILED) && ((last_status & bits) == bits);
+}
+
+/* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+
+static void test_version_reset(void) {
+	check(comm_sdc(0xc0, 'V', 0, NULL, 0) == 0, "VERSION");
+	check(sdc_hw_read(&hw, 0x0a) == 0x01 && sdc_hw_read(&hw, 0x0b) == 0x27,
+	      "VERSION BCD 1.27 after leaving command mode");
+	check(comm_sdc(0x1c, 0xaa, 0x5500, NULL, 0) == 0, "RESET $1C");
+	check(sdc_hw_read(&hw, 0x09) == 'P' && sdc_hw_read(&hw, 0x0a) == 'M',
+	      "RESET returns PM");
+}
+
+static void test_missing_and_eject(void) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	put_cmd(block, "m:MISSING.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "missing mount fails");
+	check(failed_bits(SDC_ERR_NOTFOUND), "missing mount FAILED|$10");
+
+	put_cmd(block, "M:");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject empty slot 0");
+	check(comm_sdc(0x80, 0, 0, block, 1) != 0, "read with nothing mounted fails");
+	check(last_status & SDC_FAILED, "read unmounted FAILED");
+}
+
+static void test_mount_read_info(const char *hello, size_t hello_n) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint32_t sz;
+
+	put_cmd(block, "m:HELLO.TXT");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "mount m:HELLO.TXT");
+
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 0, block, 1) == 0, "read LSN 0");
+	check(last_wait == 1, "read LSN offered READY payload");
+	check(memcmp(block, hello, hello_n) == 0, "LSN 0 matches host file");
+	check(block[hello_n] == 0, "short file zero-padded in sector");
+
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0xc0, 'I', 0, block, 1) == 0, "INFO");
+	check(memcmp(block, "HELLO   TXT", 11) == 0, "INFO 8.3 name");
+	sz = le32(block + 28);
+	check(sz == (uint32_t)hello_n, "INFO size LSB-first at 28-31");
+
+	check(comm_sdc(0xc0, 'Q', 0, NULL, 0) == 0, "QUERY size");
+	check(sdc_hw_read(&hw, 0x09) == 0 && sdc_hw_read(&hw, 0x0a) == 0 &&
+	      sdc_hw_read(&hw, 0x0b) == 1, "QUERY sector count 1");
+
+	/* FileExists sequence: mount then M: eject. */
+	put_cmd(block, "M:");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject after info");
+	check(comm_sdc(0xc0, 'I', 0, block, 1) != 0, "INFO after eject fails");
+	check(failed_bits(SDC_ERR_NOTFOUND), "INFO unmounted FAILED|$10");
+}
+
+static void test_case_partial_and_cwd(void) {
+	uint8_t block[SDC_BLOCK_SIZE];
+
+	put_cmd(block, "m:games/foo.bin");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "mount m:games/foo.bin (case)");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 0, block, 1) == 0 && block[0] == 'F' && block[2] == 'O',
+	      "FOO.BIN LSN 0");
+	memset(block, 0xaa, sizeof(block));
+	check(comm_sdc(0x80, 0, 1, block, 1) == 0, "FOO.BIN LSN 1 partial");
+	check(block[0] == 0x5a && block[43] == 0x5a && block[44] == 0,
+	      "partial sector padded with zeros");
+	check(comm_sdc(0x80, 0, 2, block, 1) != 0, "LSN past EOF fails");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	put_cmd(block, "m:/GAMES/FOO.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "absolute /GAMES/FOO.BIN");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	/* CWD at volume root: bits 4+7, no payload (CommSDC BMI on FAILED). */
+	check(comm_sdc(0xc0, 'C', 0, block, 1) != 0, "CWD at root fails");
+	check(failed_bits(SDC_ERR_NOTFOUND), "CWD root FAILED|$10");
+
+	put_cmd(block, "D:GAMES");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "D:GAMES");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0xc0, 'C', 0, block, 1) == 0, "CWD leaf");
+	check(memcmp(block, "GAMES      ", 11) == 0, "CWD 8.3 name");
+	put_cmd(block, "m:FOO.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "mount relative to CWD");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+	put_cmd(block, "D:/");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "D:/ back to root");
+}
+
+static void test_create_write_lsn_latch(void) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t a[SDC_BLOCK_SIZE];
+	uint8_t b[SDC_BLOCK_SIZE];
+	long sz = -1;
+
+	put_cmd(block, "n:NEWFILE.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "n:NEWFILE.BIN");
+
+	/* Payload of 0x3c would look like LSN 0x003C3C if params were not latched. */
+	memset(a, 0x3c, sizeof(a));
+	memcpy(a, "WRITTEN", 7);
+	check(comm_sdc(0xa0, 0, 0, a, 1) == 0, "write LSN 0");
+	check(host_size("NEWFILE.BIN", &sz) == 0 && sz == SDC_BLOCK_SIZE,
+	      "write LSN 0 size is 256 (LSN latched, not clobbered by data port)");
+
+	memset(b, 'B', sizeof(b));
+	check(comm_sdc(0xa0, 0, 1, b, 1) == 0, "write LSN 1");
+	check(host_size("NEWFILE.BIN", &sz) == 0 && sz == 2 * SDC_BLOCK_SIZE,
+	      "two sequential FileAccess-style LBNs");
+
+	put_cmd(block, "M:");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject after writes");
+	put_cmd(block, "m:NEWFILE.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "reopen NEWFILE.BIN");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 0, block, 1) == 0 && memcmp(block, "WRITTEN", 7) == 0,
+	      "read back LSN 0");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 1, block, 1) == 0 && block[0] == 'B' && block[255] == 'B',
+	      "read back LSN 1");
+
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0xc0, 'I', 0, block, 1) == 0, "INFO after write");
+	check(le32(block + 28) == 2u * SDC_BLOCK_SIZE, "INFO size 512");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+}
+
+static void test_slots_inuse(void) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t data[SDC_BLOCK_SIZE];
+
+	put_cmd(block, "m:HELLO.TXT");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "slot 0 HELLO");
+	put_cmd(block, "m:HELLO.TXT");
+	check(comm_sdc(0xe1, 0, 0, block, 1) != 0, "same file on slot 1 is in use");
+	check(failed_bits(SDC_ERR_INUSE), "in use FAILED|$20");
+
+	put_cmd(block, "n:SLOT1.BIN");
+	check(comm_sdc(0xe1, 0, 0, block, 1) == 0, "n: on slot 1");
+	memset(data, 0x11, sizeof(data));
+	data[0] = 'S';
+	check(comm_sdc(0xa1, 0, 0, data, 1) == 0, "write slot 1 LSN 0");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x81, 0, 0, block, 1) == 0 && block[0] == 'S' && block[1] == 0x11,
+	      "read slot 1");
+
+	put_cmd(block, "M:");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject slot 0");
+	check(comm_sdc(0xe1, 0, 0, block, 1) == 0, "eject slot 1");
+}
+
+static void test_dir_listing(const char *hello, size_t hello_n) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	int i, nrec, idx;
+	char path[PATH_MAX];
+
+	put_cmd(block, "L:*.*");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "L:*.*");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0xc0, '>', 0, block, 1) == 0, "DIR page");
+	check(last_wait == 1, "DIR page READY");
+	check(rec_named(block, "HELLO   TXT") >= 0, "DIR has HELLO.TXT");
+	check(rec_named(block, "GAMES      ") >= 0, "DIR has GAMES");
+	idx = rec_named(block, "HELLO   TXT");
+	if (idx >= 0) {
+		const uint8_t *r = block + idx * 16;
+		check(be32(r + 12) == (uint32_t)hello_n, "DIR size MSB-first at 12-15");
+		check((r[11] & SDC_ATTR_DIR) == 0, "HELLO is not a directory");
+	}
+	idx = rec_named(block, "GAMES      ");
+	if (idx >= 0) {
+		check((block[idx * 16 + 11] & SDC_ATTR_DIR) != 0, "GAMES attr $10");
+	}
+
+	put_cmd(block, "L:GAMES/*.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "L:GAMES/*.BIN");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0xc0, '>', 0, block, 1) == 0, "wildcard page");
+	check(rec_named(block, "FOO     BIN") >= 0, "wildcard sees FOO.BIN");
+	check(rec_named(block, "HELLO   TXT") < 0, "wildcard does not list root HELLO");
+
+	/* Two pages: 20 files → 16 + 4, unused records zero. */
+	if (snprintf(path, sizeof(path), "%s/PAGES", root_path) < (int)sizeof(path) &&
+	    mkdir(path, 0755) == 0) {
+		for (i = 0; i < 20; i++) {
+			char f[PATH_MAX];
+			char name[16];
+			snprintf(name, sizeof(name), "F%02d.DAT", i);
+			snprintf(f, sizeof(f), "%s/%s", path, name);
+			(void)write_file(f, name, strlen(name));
+		}
+		put_cmd(block, "L:PAGES/*.*");
+		check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "L:PAGES/*.*");
+		memset(block, 0, sizeof(block));
+		check(comm_sdc(0xc0, '>', 0, block, 1) == 0, "DIR page 1");
+		nrec = 0;
+		for (i = 0; i < 16; i++) {
+			if (block[i * 16] != 0) {
+				nrec++;
+			}
+		}
+		check(nrec == 16, "first dir page has 16 records");
+		memset(block, 0, sizeof(block));
+		check(comm_sdc(0xc0, '>', 0, block, 1) == 0, "DIR page 2");
+		nrec = 0;
+		for (i = 0; i < 16; i++) {
+			if (block[i * 16] != 0) {
+				nrec++;
+			}
+		}
+		check(nrec == 4, "second dir page has 4 records");
+		check(block[4 * 16] == 0, "unused dir records are zero");
+	} else {
+		check(0, "mkdir PAGES");
+	}
+}
+
+static void test_mkdir_delete(void) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	char path[PATH_MAX];
+	struct stat st;
+
+	put_cmd(block, "K:SUBDIR");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "K:SUBDIR");
+	snprintf(path, sizeof(path), "%s/SUBDIR", root_path);
+	check(stat(path, &st) == 0 && S_ISDIR(st.st_mode), "SUBDIR exists on host");
+
+	put_cmd(block, "n:SUBDIR/TMP.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "create file in SUBDIR");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	put_cmd(block, "X:SUBDIR");
+	check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "X: non-empty dir fails");
+
+	put_cmd(block, "X:SUBDIR/TMP.BIN");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "X: file");
+	put_cmd(block, "X:SUBDIR");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "X: empty dir");
+	check(stat(path, &st) != 0, "SUBDIR removed");
+}
+
+static void test_escape(void) {
+	uint8_t block[SDC_BLOCK_SIZE];
+
+	put_cmd(block, "m:../../etc/passwd");
+	check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "path escape fails");
+	check((last_status & SDC_FAILED) != 0, "path escape FAILED");
+}
+
+static void test_stream(void) {
+	uint8_t name[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_STREAM_SIZE];
+	uint8_t file[SDC_STREAM_SIZE * 2 + 40];
+	char path[PATH_MAX];
+	size_t i;
+	size_t nfile = sizeof(file);
+
+	for (i = 0; i < nfile; i++) {
+		file[i] = (uint8_t)(i & 0xff);
+	}
+	file[0] = 0xa0;
+	file[511] = 0xa1;
+	file[512] = 0xb0;
+	file[1023] = 0xb1;
+	file[1024] = 0xc0;
+	file[nfile - 1] = 0xc1;
+	if (snprintf(path, sizeof(path), "%s/STREAM.BIN", root_path) >= (int)sizeof(path) ||
+	    write_file(path, file, nfile) != 0) {
+		check(0, "write STREAM.BIN");
+		return;
+	}
+
+	/* Unmounted $90 fails (POLLREADY would hang; waitForIt sees FAILED). */
+	check(stream_start(0x90, 0) < 0, "stream with nothing mounted fails");
+	check(last_status & SDC_FAILED, "unmounted stream FAILED");
+	leave_cmd();
+
+	put_cmd(name, "m:STREAM.BIN");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "mount m:STREAM.BIN");
+
+	/* OpenSDC_File_X_At_Start: $90, POLLREADY, then 512-byte sectors. */
+	check(stream_start(0x90, 0) == 1, "stream $90 READY for first sector");
+	check((last_status & (SDC_BUSY | SDC_READY)) == (SDC_BUSY | SDC_READY),
+	      "stream first sector BUSY|READY");
+	check(stream_read_512(sec) == 1, "after sector 0 READY for sector 1");
+	check(sec[0] == 0xa0 && sec[511] == 0xa1 && sec[1] == 0x01,
+	      "stream sector 0 bytes");
+	check(memcmp(sec, file, SDC_STREAM_SIZE) == 0, "stream sector 0 matches host");
+
+	check(stream_read_512(sec) == 1, "after sector 1 READY for padded tail");
+	check(sec[0] == 0xb0 && sec[511] == 0xb1, "stream sector 1 boundary");
+	check(memcmp(sec, file + SDC_STREAM_SIZE, SDC_STREAM_SIZE) == 0,
+	      "stream sector 1 matches host");
+
+	check(stream_read_512(sec) == 0, "last stream sector then Not Busy (EOF)");
+	check(sec[0] == 0xc0 && sec[39] == 0xc1, "stream tail payload");
+	check(sec[40] == 0 && sec[511] == 0, "short last sector zero-padded to 512");
+	check(!(last_status & SDC_BUSY), "EOF clears BUSY");
+	leave_cmd();
+
+	/* LSN is a 512-byte stream sector (not FileAccess's 256-byte LBN). */
+	check(stream_start(0x90, 1) == 1, "stream from LSN 1");
+	check(stream_read_512(sec) == 1, "LSN 1 first sector is file+512");
+	check(sec[0] == 0xb0 && sec[511] == 0xb1, "LSN 1 skips first 512 bytes");
+	leave_cmd();
+
+	/* CLR $FF40 aborts an in-flight stream (Close_SD_File / BIGLOADM done). */
+	check(stream_start(0x90, 0) == 1, "stream for leave-cmd abort");
+	(void)sdc_hw_read(&hw, 0x0a);
+	pump();
+	leave_cmd();
+	check(!(sdc_hw_read(&hw, 0x08) & SDC_BUSY), "leave command mode clears stream BUSY");
+
+	/* $D0 abort (StreamTest.asm BREAK key) after the first sector. */
+	check(stream_start(0x90, 0) == 1, "stream for $D0 abort");
+	check(stream_read_512(sec) == 1, "sector 0 before abort");
+	check(sec[0] == 0xa0, "abort path still delivered sector 0");
+	stream_abort();
+	check(last_wait == 0 && !(last_status & SDC_FAILED),
+	      "abort $D0 is Not Busy");
+	leave_cmd();
+
+	put_cmd(name, "M:");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "eject STREAM.BIN");
+
+	/* Idle $D0 still must not hang (Phase B). */
+	check(comm_sdc(0xd0, 0, 0, NULL, 0) == 0, "idle abort $D0 does not hang");
+
+	/* Slot 1: StreamFile defaults SDC_DriveNumber to 1 ($E1 / $91). */
+	put_cmd(name, "m:GAMES/FOO.BIN");
+	check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "mount FOO.BIN slot 1");
+	check(stream_start(0x91, 0) == 1, "stream $91 READY");
+	check(stream_read_512(sec) == 0, "FOO.BIN one padded 512 then EOF");
+	check(sec[0] == 'F' && sec[1] == 'O' && sec[2] == 'O' && sec[3] == 0x5a,
+	      "slot 1 stream payload");
+	check(sec[299] == 0x5a && sec[300] == 0, "FOO.BIN 300 bytes padded in stream sector");
+	leave_cmd();
+	put_cmd(name, "M:");
+	check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "eject slot 1");
+
+	/* FileAccess 256-byte LSN still works on the stream file. */
+	put_cmd(name, "m:STREAM.BIN");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "reopen STREAM.BIN for $80");
+	memset(name, 0, sizeof(name));
+	check(comm_sdc(0x80, 0, 0, name, 1) == 0 && name[0] == 0xa0 &&
+	      name[255] == (uint8_t)255, "FileAccess LSN 0 is 256 bytes not 512");
+	put_cmd(name, "M:");
+	(void)comm_sdc(0xe0, 0, 0, name, 1);
+
+	/* LSN past EOF */
+	put_cmd(name, "m:HELLO.TXT");
+	check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "mount HELLO for past-EOF stream");
+	check(stream_start(0x90, 1) < 0, "stream LSN past EOF fails");
+	check(last_status & SDC_FAILED, "stream past EOF FAILED");
+	leave_cmd();
+	put_cmd(name, "M:");
+	(void)comm_sdc(0xe0, 0, 0, name, 1);
+}
+
+static void test_play(void) {
+	uint8_t sec[SDC_STREAM_SIZE];
+	uint8_t got[SDC_STREAM_SIZE * 4];
+	uint8_t pcm[SDC_STREAM_SIZE * 3 + 80];
+	char path[PATH_MAX];
+	size_t i;
+	size_t npcm = sizeof(pcm);
+	size_t nsec;
+	size_t ngot;
+	int asra;
+	unsigned sector;
+
+	for (i = 0; i < npcm; i++) {
+		pcm[i] = (uint8_t)(0x40 + (i & 0x3f));
+	}
+	pcm[0] = 0x11;
+	pcm[1] = 0x22;
+	pcm[511] = 0x33;
+	pcm[512] = 0x44;
+	pcm[1023] = 0x55;
+	pcm[1024] = 0x66;
+	pcm[npcm - 1] = 0x77;
+	if (snprintf(path, sizeof(path), "%s/PLAY.RAW", root_path) >= (int)sizeof(path) ||
+	    write_file(path, pcm, npcm) != 0) {
+		check(0, "write PLAY.RAW");
+		return;
+	}
+
+	/* Play defaults SDC_DriveNumber to 1: $E1 mount, $91 stream, stay in
+	 * command mode (no CommSDC $FF40=0 between mount and $90). */
+	check(open_sdc_file_x_at_start(1, "m:PLAY.RAW") == 1,
+	      "Play OpenSDC_File_X_At_Start $E1/$91 READY");
+	check(play_asra() == 1, "Play ASRA first sector BUSY|READY");
+
+	/* First 512 into buffer 1, then ASRA wait for the next sector (Play). */
+	play_read_512_words(sec);
+	check(sec[0] == 0x11 && sec[1] == 0x22 && sec[511] == 0x33,
+	      "Play first sector 16-bit $FF4A/$FF4B order");
+	check(memcmp(sec, pcm, SDC_STREAM_SIZE) == 0, "Play sector 0 matches host");
+	check(play_asra() == 1, "Play ASRA after sector 0 waits as READY (sector 1)");
+
+	memcpy(got, sec, SDC_STREAM_SIZE);
+	ngot = SDC_STREAM_SIZE;
+
+	/* Interleaved Play pacing: after ~166 dummy samples, blast-read 512
+	 * without a READY wait loop; one ASRA poll afterwards for EOF. */
+	nsec = (npcm + SDC_STREAM_SIZE - 1) / SDC_STREAM_SIZE;
+	for (sector = 1; sector < nsec; sector++) {
+		play_read_512_words(sec);
+		memcpy(got + ngot, sec, SDC_STREAM_SIZE);
+		ngot += SDC_STREAM_SIZE;
+		asra = play_asra();
+		if (sector + 1 < nsec) {
+			check(asra == 1, "Play interleaved poll still BUSY (more sectors)");
+		} else {
+			check(asra == 0, "Play interleaved poll Not Busy after last sector");
+		}
+	}
+	check(ngot >= npcm, "Play consumed at least the file length");
+	check(memcmp(got, pcm, npcm) == 0, "Play concatenated sectors match PLAY.RAW");
+	check(got[npcm] == 0 && got[ngot - 1] == 0, "Play short last sector zero-padded");
+	check(!(sdc_hw_read(&hw, 0x08) & SDC_BUSY), "Play EOF CLR path sees Not Busy");
+	leave_cmd();
+
+	/* BREAK: $D0 then CLR $FF40 (SDCBreak / SDCAudioPlayDone).  $D0 must
+	 * clear BUSY in the command write — Play does not waitForIt. */
+	check(open_sdc_file_x_at_start(1, "m:PLAY.RAW") == 1, "Play reopen for BREAK");
+	play_read_512_words(sec);
+	check(play_asra() == 1, "Play has another sector before BREAK");
+	play_read_512_words(sec);
+	sdc_hw_write(&hw, 0x08, 0xd0);
+	last_status = sdc_hw_read(&hw, 0x08);
+	check(!(last_status & (SDC_BUSY | SDC_FAILED)),
+	      "Play $D0 BREAK is Not Busy without pump");
+	leave_cmd();
+	check(!(sdc_hw_read(&hw, 0x08) & SDC_BUSY), "Play CLR $FF40 after $D0");
+
+	/* Same host file cannot occupy both slots; eject slot 1 first. */
+	{
+		uint8_t name[SDC_BLOCK_SIZE];
+		put_cmd(name, "M:");
+		check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "eject Play slot 1 before slot 0");
+	}
+
+	/* Drive 0 Play path ($E0/$90) — same contract, other slot. */
+	check(open_sdc_file_x_at_start(0, "m:PLAY.RAW") == 1, "Play $E0/$90 READY");
+	play_read_512_words(sec);
+	check(sec[0] == 0x11, "Play slot 0 first sample");
+	sdc_hw_write(&hw, 0x08, 0xd0);
+	leave_cmd();
+
+	/* Eject both slots (Play does not M: eject; FileAccess might next). */
+	{
+		uint8_t name[SDC_BLOCK_SIZE];
+		put_cmd(name, "M:");
+		check(comm_sdc(0xe1, 0, 0, name, 1) == 0, "eject Play slot 1");
+		check(comm_sdc(0xe0, 0, 0, name, 1) == 0, "eject Play slot 0");
+	}
+}
+
+static void test_no_root(void) {
+	uint8_t block[SDC_BLOCK_SIZE];
+	sdc_fs_free(&fs);
+	sdc_fs_init(&fs);
+	check(comm_sdc(0xc0, 'V', 0, NULL, 0) == 0, "VERSION without sdc-root");
+	put_cmd(block, "m:HELLO.TXT");
+	check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "mount without sdc-root fails");
+	check(last_status & SDC_FAILED, "mount without root FAILED");
+	sdc_fs_free(&fs);
+	sdc_fs_init(&fs);
+	check(sdc_fs_set_root(&fs, root_path) == 0, "restore sdc-root");
+}
+
+/* Disk Basic Unravelled / Toolshed / Studio rsdos.rs:
+ * T17 S1 unused, T17 S2 FAT, T17 S3–S11 directory (8×32-byte entries).
+ * First byte $00 = killed (skip); $FF = never used (DIR stops).
+ * A catalog on S2 is invisible to DECB DIR — the "mounted but DIR empty" miss. */
+#define DECB_DSK_BYTES     (35 * 18 * 256)
+#define DECB_FAT_OFF       ((17 * 18 + 1) * 256)
+#define DECB_DIR_OFF       ((17 * 18 + 2) * 256)
+#define DECB_SKEW_DIR_OFF  ((17 * 18 + 1) * 256)
+
+static void decb_put_dirent(uint8_t *dir, int slot, const char *name11,
+			    uint8_t typ, uint8_t asc, uint8_t gran, uint16_t last) {
+	uint8_t *e = dir + slot * 32;
+	memset(e, 0, 32);
+	memcpy(e, name11, 11);
+	e[11] = typ;
+	e[12] = asc;
+	e[13] = gran;
+	e[14] = (uint8_t)(last >> 8);
+	e[15] = (uint8_t)last;
+}
+
+static int write_decb_dsk_layout(const char *path, const char *payload, size_t pay_n,
+				 int dir_on_s3) {
+	uint8_t *img;
+	uint8_t *dir;
+	size_t n = pay_n > 255 ? 255 : pay_n;
+	int rc = -1;
+
+	img = calloc(1, DECB_DSK_BYTES);
+	if (!img) {
+		return -1;
+	}
+	memset(img + DECB_FAT_OFF, 0xff, 256);
+	img[DECB_FAT_OFF + 0] = (uint8_t)(0xc0 | 1);
+	if (dir_on_s3) {
+		dir = img + DECB_DIR_OFF;
+		memset(dir, 0xff, 256);
+	} else {
+		/* Wrong: catalog on the FAT sector (old unit-test layout). */
+		dir = img + DECB_SKEW_DIR_OFF;
+	}
+	decb_put_dirent(dir, 0, "START   BAS", 0, 0xff, 0, (uint16_t)n);
+	memcpy(img, payload, n);
+	if (write_file(path, img, DECB_DSK_BYTES) == 0) {
+		rc = 0;
+	}
+	free(img);
+	return rc;
+}
+
+static int write_decb_dsk(const char *path, const char *payload, size_t pay_n) {
+	return write_decb_dsk_layout(path, payload, pay_n, 1);
+}
+
+static int write_decb_dsk_skewed(const char *path, const char *payload, size_t pay_n) {
+	return write_decb_dsk_layout(path, payload, pay_n, 0);
+}
+
+/* Studio RsdosDisk: unused entries $FF, FAT on S2, catalog on S3, granule 0 at T0 S1. */
+static int write_studio_launch_dsk(const char *path) {
+	static const char start[] = "10 PRINT \"START\"\r";
+	static const char autoexec[] = "10 RUN\"START\"\r";
+	static const char mover[] = "MOVER";
+	uint8_t *img;
+	uint8_t *dir;
+	int rc = -1;
+
+	img = calloc(1, DECB_DSK_BYTES);
+	if (!img) {
+		return -1;
+	}
+	memset(img + DECB_FAT_OFF, 0xff, 256);
+	img[DECB_FAT_OFF + 0] = (uint8_t)(0xc0 | 1);
+	img[DECB_FAT_OFF + 1] = (uint8_t)(0xc0 | 1);
+	img[DECB_FAT_OFF + 2] = (uint8_t)(0xc0 | 1);
+	dir = img + DECB_DIR_OFF;
+	memset(dir, 0xff, 9 * 256);
+	decb_put_dirent(dir, 0, "START   BAS", 0, 0xff, 0, (uint16_t)strlen(start));
+	decb_put_dirent(dir, 1, "AUTOEXECBAS", 0, 0xff, 1, (uint16_t)strlen(autoexec));
+	decb_put_dirent(dir, 2, "MOVER   BIN", 2, 0, 2, (uint16_t)strlen(mover));
+	memcpy(img + 0 * 9 * 256, start, strlen(start));
+	memcpy(img + 1 * 9 * 256, autoexec, strlen(autoexec));
+	memcpy(img + 2 * 9 * 256, mover, strlen(mover));
+	if (write_file(path, img, DECB_DSK_BYTES) == 0) {
+		rc = 0;
+	}
+	free(img);
+	return rc;
+}
+
+static void fdc_latch_drive0(struct sdc_fdc *f) {
+	sdc_fdc_write(f, &fs, 0x00, 0xa9); /* halt + density + motor + drv0 */
+}
+
+static void fdc_restore(struct sdc_fdc *f) {
+	sdc_fdc_write(f, &fs, 0x08, 0x03);
+}
+
+static int fdc_read_sector(struct sdc_fdc *f, uint8_t track, uint8_t sector, uint8_t *buf) {
+	unsigned i;
+	uint8_t st;
+
+	sdc_fdc_write(f, &fs, 0x09, track);
+	sdc_fdc_write(f, &fs, 0x0a, sector);
+	sdc_fdc_write(f, &fs, 0x08, 0x80);
+	st = sdc_fdc_read(f, &fs, 0x08);
+	if (st & SDC_FLP_NOTREADY) {
+		last_status = st;
+		return -1;
+	}
+	if (!(st & SDC_FLP_DRQ)) {
+		last_status = st;
+		return -1;
+	}
+	for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+		buf[i] = sdc_fdc_read(f, &fs, 0x0b);
+	}
+	last_status = sdc_fdc_read(f, &fs, 0x08);
+	return 0;
+}
+
+static void test_dsk_mount_and_fdc(void) {
+	char path[PATH_MAX];
+	const char *bas = "10 PRINT \"OK\"\r";
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	uint8_t wr[SDC_BLOCK_SIZE];
+
+	if (snprintf(path, sizeof(path), "%s/START.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "write START.DSK");
+		return;
+	}
+
+	put_cmd(block, "M:HELLO.TXT");
+	check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "M: of tiny non-DSK fails");
+	check(failed_bits(SDC_ERR_INVALID), "M: HELLO.TXT FAILED|$04 invalid image");
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	fdc_restore(&fdc);
+	check(sdc_fdc_read(&fdc, &fs, 0x08) & SDC_FLP_NOTREADY,
+	      "FDC restore with nothing mounted is NOTREADY");
+
+	put_cmd(block, "m:START.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "m:START.DSK raw mount");
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(fdc_read_sector(&fdc, 17, 2, sec) != 0, "FDC read of m: raw is not ready");
+	check(last_status & SDC_FLP_NOTREADY, "m: DSK does not enable FDC");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	put_cmd(block, "M:START.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M:START.DSK disk-image mount");
+	check(sdc_fs_fdc_ready(&fs, 0), "M: sets fdc_ok on slot 0");
+
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 0, block, 1) == 0, "LSN 0 after M: is first sector");
+	check(memcmp(block, bas, strlen(bas)) == 0, "LSN 0 is START.BAS payload");
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	fdc_restore(&fdc);
+	check(fdc.track == 0, "restore sets track 0");
+	check(!fdc.intrq && !sdc_fdc_want_nmi(&fdc),
+	      "restore does not NMI (DECB polls !BUSY; instant INTRQ aborts DSKCON)");
+	last_status = sdc_fdc_read(&fdc, &fs, 0x08);
+	check(!(last_status & SDC_FLP_BUSY), "restore is not busy");
+	check(!(last_status & SDC_FLP_NOTREADY), "restore with mounted DSK is ready");
+
+	check(fdc_read_sector(&fdc, 17, 3, sec) == 0, "DSKCON read directory T17 S3");
+	check(memcmp(sec, "START   BAS", 11) == 0, "directory entry START.BAS");
+	check(sec[12] == 0xff && sec[13] == 0, "ASCII BASIC granule 0");
+	check(sdc_fdc_want_nmi(&fdc) || !fdc.drq, "sector complete drops DRQ");
+
+	check(fdc_read_sector(&fdc, 0, 1, sec) == 0, "DSKCON read T0 S1 (granule 0)");
+	check(memcmp(sec, bas, strlen(bas)) == 0, "START.BAS payload via FDC CHS");
+
+	check(fdc_read_sector(&fdc, 17, 2, sec) == 0, "read FAT T17 S2");
+	check((sec[0] & 0xc0) == 0xc0, "FAT granule 0 is last granule");
+
+	memset(wr, 0x5a, sizeof(wr));
+	sdc_fdc_write(&fdc, &fs, 0x09, 0);
+	sdc_fdc_write(&fdc, &fs, 0x0a, 2);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0xa0);
+	check(fdc.drq, "write sector presents DRQ");
+	{
+		unsigned i;
+		for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+			sdc_fdc_write(&fdc, &fs, 0x0b, wr[i]);
+		}
+	}
+	check(fdc_read_sector(&fdc, 0, 2, sec) == 0 && sec[0] == 0x5a && sec[255] == 0x5a,
+	      "FDC write sector round-trip");
+
+	put_cmd(block, "M:");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject START.DSK");
+}
+
+static void test_startup_cfg_and_jvc(void) {
+	char path[PATH_MAX];
+	char cfg[PATH_MAX];
+	const char *bas = "10 PRINT \"CFG\"\r";
+	uint8_t *jvc;
+	uint8_t sec[SDC_BLOCK_SIZE];
+	uint8_t block[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	struct sdc_fs fs2;
+
+	if (snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "write AUTO.DSK");
+		return;
+	}
+	if (snprintf(cfg, sizeof(cfg), "%s/startup.cfg", root_path) >= (int)sizeof(cfg) ||
+	    write_file(cfg, "D=/\n0=AUTO.DSK\n", strlen("D=/\n0=AUTO.DSK\n")) != 0) {
+		check(0, "write startup.cfg");
+		return;
+	}
+
+	sdc_fs_reset(&fs);
+	check(sdc_fs_apply_startup(&fs) == 0, "apply STARTUP.CFG");
+	check(sdc_fs_fdc_ready(&fs, 0), "startup.cfg 0=AUTO.DSK auto-mounted");
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(fdc_read_sector(&fdc, 17, 3, sec) == 0, "auto-mount directory readable");
+	check(memcmp(sec, "START   BAS", 11) == 0, "auto-mounted DSK has START.BAS");
+	check(fdc_read_sector(&fdc, 0, 1, sec) == 0 && memcmp(sec, bas, strlen(bas)) == 0,
+	      "auto-mounted START.BAS payload");
+
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	jvc = malloc(2 + DECB_DSK_BYTES);
+	if (!jvc) {
+		check(0, "alloc JVC");
+		return;
+	}
+	jvc[0] = 18;
+	jvc[1] = 1;
+	if (snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path)) {
+		free(jvc);
+		check(0, "AUTO.DSK path");
+		return;
+	}
+	{
+		FILE *fp = fopen(path, "rb");
+		if (!fp || fread(jvc + 2, 1, DECB_DSK_BYTES, fp) != DECB_DSK_BYTES) {
+			if (fp) {
+				fclose(fp);
+			}
+			free(jvc);
+			check(0, "read AUTO.DSK for JVC wrap");
+			return;
+		}
+		fclose(fp);
+	}
+	if (snprintf(path, sizeof(path), "%s/JVC.DSK", root_path) >= (int)sizeof(path) ||
+	    write_file(path, jvc, 2 + DECB_DSK_BYTES) != 0) {
+		free(jvc);
+		check(0, "write JVC.DSK");
+		return;
+	}
+	free(jvc);
+
+	put_cmd(block, "M:JVC.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: JVC 2-byte header");
+	memset(block, 0, sizeof(block));
+	check(comm_sdc(0x80, 0, 0, block, 1) == 0, "LSN 0 skips JVC header");
+	check(memcmp(block, "10 PRINT", 8) == 0, "JVC LSN 0 is sector data not header");
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(fdc_read_sector(&fdc, 0, 1, sec) == 0 && memcmp(sec, "10 PRINT", 8) == 0,
+	      "FDC CHS skips JVC header");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	/* Hard-reset style: set_root reapplies startup.cfg */
+	sdc_fs_init(&fs2);
+	check(sdc_fs_set_root(&fs2, root_path) == 0, "set_root applies startup.cfg");
+	check(sdc_fs_fdc_ready(&fs2, 0), "set_root auto-mounts AUTO.DSK");
+	sdc_fs_free(&fs2);
+}
+
+/* DECB DSKCON (Unravelled LD7F8): $FF40 density/NMI, Seek $17 polling
+ * !BUSY (not NMI), sector register, $80/$A0, poll DRQ, LDA/STA $FF4B /
+ * STA $FF40 each byte, NMI terminates, ANDA #$7C → DCSTA.
+ * Instant INTRQ before any Type II data is the empty-DIR / ?NE bug.
+ * Instant Seek INTRQ with nmi_enable is the same if NMIFLG is already set. */
+static int decb_dskcon_seek(struct sdc_fdc *f, uint8_t track) {
+	uint8_t st;
+
+	sdc_fdc_write(f, &fs, 0x09, f->track);
+	if (f->track == track) {
+		return 0;
+	}
+	sdc_fdc_write(f, &fs, 0x0b, track);
+	sdc_fdc_write(f, &fs, 0x08, 0x17);
+	if (sdc_fdc_want_nmi(f)) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		last_status = (uint8_t)(st & 0x7c);
+		return -2; /* Seek NMI: DSKCON would return without Type II */
+	}
+	st = sdc_fdc_read(f, &fs, 0x08);
+	if (st & SDC_FLP_BUSY) {
+		last_status = 0x80;
+		return -1;
+	}
+	return 0;
+}
+
+static int decb_dskcon_read(struct sdc_fdc *f, uint8_t track, uint8_t sector,
+			    uint8_t *buf) {
+	unsigned i;
+	uint8_t st = 0;
+	int y;
+	int rc;
+
+	memset(buf, 0xaa, SDC_BLOCK_SIZE);
+	sdc_fdc_write(f, &fs, 0x00, 0x29); /* motor + density/NMI + drv0 */
+	rc = decb_dskcon_seek(f, track);
+	if (rc == -2) {
+		return last_status == 0 ? 0 : -1;
+	}
+	if (rc != 0) {
+		return -1;
+	}
+	sdc_fdc_write(f, &fs, 0x0a, sector);
+	(void)sdc_fdc_read(f, &fs, 0x08); /* RESET INTRQ (LDA FDCREG) */
+	sdc_fdc_write(f, &fs, 0x08, 0x80);
+
+	if (sdc_fdc_want_nmi(f)) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		last_status = (uint8_t)(st & 0x7c);
+		return last_status == 0 ? 0 : -1;
+	}
+
+	for (y = 0; y < 4096; y++) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		if (st & SDC_FLP_DRQ) {
+			break;
+		}
+		if (sdc_fdc_want_nmi(f)) {
+			st = sdc_fdc_read(f, &fs, 0x08);
+			last_status = (uint8_t)(st & 0x7c);
+			return last_status == 0 ? 0 : -1;
+		}
+	}
+	if (!(st & SDC_FLP_DRQ)) {
+		sdc_fdc_write(f, &fs, 0x08, 0xd0);
+		last_status = 0x80;
+		return -1;
+	}
+	for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+		buf[i] = sdc_fdc_read(f, &fs, 0x0b);
+		sdc_fdc_write(f, &fs, 0x00, 0xa9);
+		if (sdc_fdc_want_halt(f)) {
+			last_status = 0x04; /* lost data: HALT froze mid-sector */
+			return -1;
+		}
+	}
+	st = sdc_fdc_read(f, &fs, 0x08);
+	last_status = (uint8_t)(st & 0x7c);
+	return last_status == 0 ? 0 : -1;
+}
+
+static int decb_dskcon_write(struct sdc_fdc *f, uint8_t track, uint8_t sector,
+			     const uint8_t *buf) {
+	unsigned i;
+	uint8_t st = 0;
+	int y;
+	int rc;
+
+	sdc_fdc_write(f, &fs, 0x00, 0x29);
+	rc = decb_dskcon_seek(f, track);
+	if (rc == -2) {
+		return last_status == 0 ? 0 : -1;
+	}
+	if (rc != 0) {
+		return -1;
+	}
+	sdc_fdc_write(f, &fs, 0x0a, sector);
+	(void)sdc_fdc_read(f, &fs, 0x08);
+	sdc_fdc_write(f, &fs, 0x08, 0xa0);
+
+	if (sdc_fdc_want_nmi(f)) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		last_status = (uint8_t)(st & 0x7c);
+		return last_status == 0 ? 0 : -1;
+	}
+	for (y = 0; y < 4096; y++) {
+		st = sdc_fdc_read(f, &fs, 0x08);
+		if (st & SDC_FLP_DRQ) {
+			break;
+		}
+		if (sdc_fdc_want_nmi(f)) {
+			st = sdc_fdc_read(f, &fs, 0x08);
+			last_status = (uint8_t)(st & 0x7c);
+			return last_status == 0 ? 0 : -1;
+		}
+	}
+	if (!(st & SDC_FLP_DRQ)) {
+		sdc_fdc_write(f, &fs, 0x08, 0xd0);
+		last_status = 0x80;
+		return -1;
+	}
+	for (i = 0; i < SDC_BLOCK_SIZE; i++) {
+		sdc_fdc_write(f, &fs, 0x0b, buf[i]);
+		sdc_fdc_write(f, &fs, 0x00, 0xa9);
+		if (sdc_fdc_want_halt(f)) {
+			last_status = 0x04;
+			return -1;
+		}
+	}
+	st = sdc_fdc_read(f, &fs, 0x08);
+	last_status = (uint8_t)(st & 0x7c);
+	return last_status == 0 ? 0 : -1;
+}
+
+static int host_read_dsk_sector(const char *path, unsigned track,
+				unsigned sector, uint8_t *buf) {
+	FILE *fp;
+	long off = (long)((track * 18u + (sector - 1u)) * 256u);
+
+	fp = fopen(path, "rb");
+	if (!fp) {
+		return -1;
+	}
+	if (fseek(fp, off, SEEK_SET) != 0 ||
+	    fread(buf, 1, SDC_BLOCK_SIZE, fp) != SDC_BLOCK_SIZE) {
+		fclose(fp);
+		return -1;
+	}
+	fclose(fp);
+	return 0;
+}
+
+/* DECB DIR (Unravelled CCA9): start T17 S3, $00 skip killed, $FF stop. */
+static int decb_dir_list(struct sdc_fdc *f, char names[][12], int maxn) {
+	int n = 0;
+	uint8_t sec[SDC_BLOCK_SIZE];
+	unsigned s, e;
+
+	for (s = 3; s <= 11; s++) {
+		if (decb_dskcon_read(f, 17, (uint8_t)s, sec) != 0) {
+			return -1;
+		}
+		for (e = 0; e < 8; e++) {
+			uint8_t *ent = sec + e * 32;
+			if (ent[0] == 0) {
+				continue;
+			}
+			if (ent[0] == 0xff) {
+				return n;
+			}
+			if (n < maxn) {
+				memcpy(names[n], ent, 11);
+				names[n][11] = 0;
+				n++;
+			}
+		}
+	}
+	return n;
+}
+
+static int dir_has(char names[][12], int n, const char *want11) {
+	int i;
+	for (i = 0; i < n; i++) {
+		if (memcmp(names[i], want11, 11) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void test_mounted_dir_empty_vs_real_layout(void) {
+	char path[PATH_MAX];
+	char names[16][12];
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	const char *bas = "10 PRINT \"START\"\r";
+	int n;
+
+	/* Old unit-test layout: names on T17 S2. Mount works; DECB DIR is empty. */
+	if (snprintf(path, sizeof(path), "%s/SKEW.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk_skewed(path, bas, strlen(bas)) != 0) {
+		check(0, "write SKEW.DSK");
+		return;
+	}
+	put_cmd(block, "M:SKEW.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: SKEW.DSK (catalog on FAT sector)");
+	check(sdc_fs_fdc_ready(&fs, 0), "skewed DSK still fdc_ok");
+	check(sdc_fs_fdc_read(&fs, 0, 17, 2, 0, sec) == 0 &&
+	      memcmp(sec, "START   BAS", 11) == 0,
+	      "host peek of T17 S2 sees START.BAS (skewed)");
+	check(sdc_fs_fdc_read(&fs, 0, 17, 3, 0, sec) == 0 && sec[0] == 0,
+	      "T17 S3 on skewed DSK is unused zeros");
+	sdc_fdc_reset(&fdc);
+	n = decb_dir_list(&fdc, names, 16);
+	check(n == 0, "DECB DIR of S2-only catalog is empty (mounted but DIR empty)");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+
+	/* Correct layout + Studio-style $FF unused entries and several files. */
+	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
+	    write_studio_launch_dsk(path) != 0) {
+		check(0, "write Studio-style LAUNCH.DSK");
+		return;
+	}
+	put_cmd(block, "M:LAUNCH.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: Studio-style LAUNCH.DSK");
+	sdc_fdc_reset(&fdc);
+	n = decb_dir_list(&fdc, names, 16);
+	check(n == 3, "DECB DIR lists 3 Studio files");
+	check(dir_has(names, n, "START   BAS"), "DIR 0 lists START.BAS");
+	check(dir_has(names, n, "AUTOEXECBAS"), "DIR 0 lists AUTOEXEC.BAS");
+	check(dir_has(names, n, "MOVER   BIN"), "DIR 0 lists MOVER.BIN");
+	check(decb_dskcon_read(&fdc, 0, 1, sec) == 0 && memcmp(sec, "10 PRINT", 8) == 0,
+	      "RUN START.BAS payload is granule 0 / T0 S1");
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+}
+
+static void test_fdc_host_persist_and_ok_empty_dir(void) {
+	char path[PATH_MAX];
+	char names[16][12];
+	uint8_t block[SDC_BLOCK_SIZE];
+	uint8_t sec[SDC_BLOCK_SIZE];
+	uint8_t host[SDC_BLOCK_SIZE];
+	uint8_t wr[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	int n;
+
+	if (snprintf(path, sizeof(path), "%s/PERSIST.DSK", root_path) >= (int)sizeof(path) ||
+	    write_studio_launch_dsk(path) != 0) {
+		check(0, "write persist LAUNCH-layout DSK");
+		return;
+	}
+
+	put_cmd(block, "M:PERSIST.DSK");
+	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "M: persist Studio DSK");
+	check(sdc_fs_fdc_ready(&fs, 0), "persist DSK fdc_ok");
+	check(host_read_dsk_sector(path, 17, 3, host) == 0 &&
+	      memcmp(host, "START   BAS", 11) == 0,
+	      "independent host fopen sees T17 S3 START.BAS before FDC");
+
+	sdc_fdc_reset(&fdc);
+	n = decb_dir_list(&fdc, names, 16);
+	check(n == 3, "DECB DIR after mount lists 3 files (not status-OK empty)");
+	check(dir_has(names, n, "START   BAS"), "DIR lists START.BAS from host T17 S3");
+
+	/* Status OK / zero DIR / no host mutation: Seek must not NMI. */
+	sdc_fdc_reset(&fdc);
+	sdc_fdc_write(&fdc, &fs, 0x00, 0x29);
+	sdc_fdc_write(&fdc, &fs, 0x0b, 17);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0x17);
+	check(!sdc_fdc_want_nmi(&fdc),
+	      "Seek $17 with nmi_enable does not INTRQ (would blank DIR)");
+	check(!(sdc_fdc_read(&fdc, &fs, 0x08) & SDC_FLP_BUSY), "Seek is not busy");
+	check(fdc.track == 17, "Seek sets track 17");
+
+	memset(wr, 0, sizeof(wr));
+	decb_put_dirent(wr, 0, "HEY     BAS", 0, 0xff, 3, 12);
+	memset(wr + 32, 0xff, SDC_BLOCK_SIZE - 32);
+	sdc_fdc_reset(&fdc);
+	check(decb_dskcon_write(&fdc, 17, 3, wr) == 0, "DSKCON write T17 S3 HEY.BAS");
+	sdc_fs_flush(&fs);
+
+	check(host_read_dsk_sector(path, 17, 3, host) == 0 &&
+	      memcmp(host, "HEY     BAS", 11) == 0,
+	      "host file mutated: HEY.BAS on T17 S3 after SAVE-style write");
+	check(decb_dskcon_read(&fdc, 17, 3, sec) == 0 &&
+	      memcmp(sec, "HEY     BAS", 11) == 0,
+	      "FDC read-back of written directory matches");
+
+	/* DSKINI write-track $F4 fills the track in the same host file. */
+	sdc_fdc_reset(&fdc);
+	sdc_fdc_write(&fdc, &fs, 0x00, 0x29);
+	sdc_fdc_write(&fdc, &fs, 0x09, 0);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0xf4);
+	check(sdc_fdc_want_nmi(&fdc) || fdc.intrq,
+	      "write-track NMIs so DSKINI can leave its HALT loop");
+	last_status = (uint8_t)(sdc_fdc_read(&fdc, &fs, 0x08) & 0x44);
+	check(last_status == 0, "DSKINI ANDA #$44 write-track status is 0");
+	sdc_fs_flush(&fs);
+	check(host_read_dsk_sector(path, 0, 1, host) == 0 && host[0] == 0xff &&
+	      host[255] == 0xff,
+	      "DSKINI write-track persisted $FF fill to host T0 S1");
+
+	put_cmd(block, "M:");
+	(void)comm_sdc(0xe0, 0, 0, block, 1);
+}
+
+static void test_decb_dskcon_and_glen_cfg(void) {
+	char path[PATH_MAX];
+	char cfg[PATH_MAX];
+	char space_root[PATH_MAX];
+	const char *bas = "10 PRINT \"START\"\r";
+	uint8_t sec[SDC_BLOCK_SIZE];
+	uint8_t word[SDC_BLOCK_SIZE];
+	struct sdc_fdc fdc;
+	struct sdc_fs fs_space;
+	unsigned i;
+	/* Glen's host dump: 0=LAUNCH.DSK\r\n */
+	static const unsigned char glen_cfg[] = {
+		0x30, 0x3d, 0x4c, 0x41, 0x55, 0x4e, 0x43, 0x48,
+		0x2e, 0x44, 0x53, 0x4b, 0x0d, 0x0a
+	};
+
+	sdc_fdc_reset(&fdc);
+	fdc_latch_drive0(&fdc);
+	check(decb_dskcon_read(&fdc, 17, 2, sec) != 0,
+	      "DECB DSKCON unmounted times out (?IO), does not NMI-succeed");
+	check(last_status == 0x80, "unmounted DECB DCSTA is $80 not-ready");
+	check(sec[0] == 0xaa, "unmounted DECB did not deliver a fake empty sector");
+
+	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "write LAUNCH.DSK");
+		return;
+	}
+	if (snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", root_path) >= (int)sizeof(cfg) ||
+	    write_file(cfg, glen_cfg, sizeof(glen_cfg)) != 0) {
+		check(0, "write Glen STARTUP.CFG bytes");
+		return;
+	}
+
+	sdc_fs_reset(&fs);
+	check(sdc_fs_apply_startup(&fs) == 0, "apply Glen STARTUP.CFG 0=LAUNCH.DSK\\r\\n");
+	check(sdc_fs_fdc_ready(&fs, 0), "Glen CFG sets fdc_ok on drive 0");
+
+	sdc_fdc_reset(&fdc);
+	check(decb_dskcon_read(&fdc, 17, 3, sec) == 0, "DECB DSKCON DIR sector after CFG");
+	check(memcmp(sec, "START   BAS", 11) == 0, "DECB DIR lists START.BAS");
+	check(decb_dskcon_read(&fdc, 0, 1, sec) == 0 && memcmp(sec, bas, strlen(bas)) == 0,
+	      "DECB RUN START.BAS payload via FDC");
+
+	/* 16-bit LDU $FF4A / $FF4B while DRQ */
+	sdc_fdc_reset(&fdc);
+	sdc_fdc_write(&fdc, &fs, 0x00, 0xa9);
+	sdc_fdc_write(&fdc, &fs, 0x09, 17);
+	sdc_fdc_write(&fdc, &fs, 0x0a, 3);
+	sdc_fdc_write(&fdc, &fs, 0x08, 0x80);
+	check(sdc_fdc_read(&fdc, &fs, 0x08) & SDC_FLP_DRQ, "16-bit path presents DRQ");
+	for (i = 0; i < SDC_BLOCK_SIZE; i += 2) {
+		word[i] = sdc_fdc_read(&fdc, &fs, 0x0a);
+		word[i + 1] = sdc_fdc_read(&fdc, &fs, 0x0b);
+	}
+	check(memcmp(word, "START   BAS", 11) == 0, "LDU $FF4A directory is START.BAS");
+
+	/* Hard reset unmounts then STARTUP.CFG remounts. */
+	sdc_fs_reset(&fs);
+	check(!sdc_fs_fdc_ready(&fs, 0), "hard reset unmounts");
+	check(sdc_fs_apply_startup(&fs) == 0, "hard reset reapplies Glen CFG");
+	check(sdc_fs_fdc_ready(&fs, 0), "hard reset remounts LAUNCH.DSK FDC");
+
+	/* Path with spaces (Google Drive style sdc-root). */
+	if (snprintf(space_root, sizeof(space_root), "%s/google drive", root_path) >=
+	    (int)sizeof(space_root) || mkdir(space_root, 0755) != 0) {
+		check(0, "mkdir sdc-root with spaces");
+		return;
+	}
+	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", space_root) >= (int)sizeof(path) ||
+	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
+		check(0, "LAUNCH.DSK under spaced sdc-root");
+		return;
+	}
+	if (snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", space_root) >= (int)sizeof(cfg) ||
+	    write_file(cfg, glen_cfg, sizeof(glen_cfg)) != 0) {
+		check(0, "STARTUP.CFG under spaced sdc-root");
+		return;
+	}
+	sdc_fs_init(&fs_space);
+	check(sdc_fs_set_root(&fs_space, space_root) == 0, "set_root path with spaces");
+	check(sdc_fs_fdc_ready(&fs_space, 0), "spaces in sdc-root still fdc_ok");
+	{
+		uint8_t dirsec[SDC_BLOCK_SIZE];
+		check(sdc_fs_fdc_read(&fs_space, 0, 17, 3, 0, dirsec) == 0 &&
+		      memcmp(dirsec, "START   BAS", 11) == 0,
+		      "directory sector readable from spaced sdc-root");
+	}
+	sdc_fs_free(&fs_space);
+}
+
+/* The ROM uses $82/$A2, not just the unflagged CommSDC examples. These
+ * tests check both slots and host bytes, so successful no-ops cannot pass. */
+static int host_fingerprint(const char *path, uint64_t *hash, unsigned *size) {
+	uint8_t block[4096];
+	FILE *fp = fopen(path, "rb");
+	if (!fp) return -1;
+	*hash = UINT64_C(14695981039346656037);
+	*size = 0;
+	for (;;) {
+		size_t n = fread(block, 1, sizeof(block), fp);
+		for (size_t i = 0; i < n; i++) {
+			*hash ^= block[i];
+			*hash *= UINT64_C(1099511628211);
+		}
+		*size += (unsigned)n;
+		if (n < sizeof(block)) break;
+	}
+	int rc = ferror(fp) ? -1 : 0;
+	fclose(fp);
+	return rc;
+}
+
+static void test_lsn_command_variants(void) {
+	uint8_t block[SDC_BLOCK_SIZE], payload[SDC_BLOCK_SIZE], actual[SDC_BLOCK_SIZE];
+	char path[PATH_MAX], name[32], command[40];
+	unsigned geometry, drive;
+
+	for (geometry = 0; geometry < 3; geometry++) {
+		unsigned header = geometry == 0 ? 0 : geometry == 1 ? 2 : 1;
+		unsigned sectors = geometry == 0 ? 630 : geometry == 1 ? 1260 : 1440;
+		unsigned physical = geometry == 1 ? 36 : 18;
+		unsigned size = header + sectors * SDC_BLOCK_SIZE;
+		uint8_t *image = malloc(size);
+		if (!check(image != NULL, "allocate LSN variant disk")) return;
+		for (drive = 0; drive < 2; drive++) {
+			memset(image, 0, size);
+			if (header) image[0] = 18;
+			if (header == 2) image[1] = 2;
+			for (unsigned sector = 0; sector < sectors; sector++) {
+				memset(image + header + sector * SDC_BLOCK_SIZE,
+				       (uint8_t)(sector ^ (drive * 0x80)), SDC_BLOCK_SIZE);
+			}
+			snprintf(name, sizeof(name), "VAR%u%u.DSK", geometry, drive);
+			snprintf(path, sizeof(path), "%s/%s", root_path, name);
+			check(write_file(path, image, size) == 0, "create LSN variant disk");
+			snprintf(command, sizeof(command), "M:%s", name);
+			put_cmd(block, command);
+			check(comm_sdc((uint8_t)(0xe0 | drive), 0, 0, block, 1) == 0,
+			      "mount LSN variant disk in requested slot");
+			check(fs.slot[drive].sides == (geometry == 1 ? 2 : 1),
+			      "single/double-sided and one-byte JVC geometry");
+		}
+		free(image);
+
+		for (drive = 0; drive < 2; drive++) {
+			uint8_t read_cmd = (uint8_t)(0x82 | drive);
+			uint8_t write_cmd = (uint8_t)(0xa2 | drive);
+			memset(payload, (uint8_t)(physical ^ (drive * 0x80)), sizeof(payload));
+			memset(block, 0xEE, sizeof(block));
+			check(comm_sdc(read_cmd, 0, 18, block, 1) == 0 &&
+			      memcmp(block, payload, sizeof(block)) == 0,
+			      "$82/$83 read complete sector with single-sided LSN translation");
+			for (unsigned i = 0; i < sizeof(payload); i++)
+				payload[i] = (uint8_t)(i * 17 + drive * 31 + geometry * 7);
+			check(comm_sdc(write_cmd, 0, 18, payload, 1) == 0,
+			      "$A2/$A3 accepts complete sector");
+			memset(block, 0xEE, sizeof(block));
+			check(comm_sdc(read_cmd, 0, 18, block, 1) == 0 &&
+			      memcmp(block, payload, sizeof(block)) == 0,
+			      "$A2/$A3 data reads back through $82/$83");
+
+			snprintf(path, sizeof(path), "%s/VAR%u%u.DSK", root_path, geometry, drive);
+			FILE *fp = fopen(path, "rb");
+			int persisted = fp && fseek(fp, (long)(header + physical * SDC_BLOCK_SIZE), SEEK_SET) == 0 &&
+				fread(actual, 1, sizeof(actual), fp) == sizeof(actual) &&
+				memcmp(actual, payload, sizeof(actual)) == 0;
+			check(persisted, "$A2/$A3 persists exact bytes at physical host offset");
+			if (fp) {
+				if (geometry == 1) {
+					check(fseek(fp, header + 18 * SDC_BLOCK_SIZE, SEEK_SET) == 0 &&
+					      fread(actual, 1, sizeof(actual), fp) == sizeof(actual) &&
+					      actual[0] == (uint8_t)(18 ^ (drive * 0x80)) &&
+					      actual[255] == actual[0],
+					      "single-sided LSN write does not overwrite side 1 of prior track");
+				}
+				fclose(fp);
+			}
+
+			/* $84/$85: physical LSN. $86/$87: translated LSN. Both
+			 * consume exactly 256 FF4B reads; FF4A is not a data port. */
+			for (unsigned single = 0; single < 2; single++) {
+				unsigned lsn = single ? 18 : physical;
+				sdc_hw_write(&hw, 0, SDC_CMDMODE);
+				sdc_hw_write(&hw, 9, 0);
+				sdc_hw_write(&hw, 10, (uint8_t)(lsn >> 8));
+				sdc_hw_write(&hw, 11, (uint8_t)lsn);
+				sdc_hw_write(&hw, 8, (uint8_t)(0x84 | (single << 1) | drive));
+				pump();
+				check(wait_for_it() == 1, "$84-$87 provides READY data");
+				int port_ok = 1;
+				for (unsigned i = 0; i < sizeof(block); i++) {
+					unsigned before = hw.xfer_index;
+					(void)sdc_hw_read(&hw, 10);
+					port_ok &= hw.xfer_index == before;
+					block[i] = sdc_hw_read(&hw, 11);
+				}
+				check(port_ok && memcmp(block, payload, sizeof(block)) == 0,
+				      "$84-$87 byte port preserves all sector bytes and ignores FF4A reads");
+				check(sdc_hw_read(&hw, 8) == 0, "byte sector completes on final byte");
+				leave_cmd();
+			}
+			memset(block, 0, sizeof(block));
+			check(comm_sdc(read_cmd, 0, 18, block, 1) == 0 &&
+			      memcmp(block, payload, sizeof(block)) == 0,
+			      "word transfer restored after byte-mode command");
+			check(comm_sdc(read_cmd, 0, (uint16_t)sectors, block, 1) != 0 &&
+			      (last_status & SDC_FAILED),
+			      "$82/$83 beyond the mounted image reports failure");
+			uint64_t before_hash, after_hash;
+			unsigned before_size, after_size;
+			int before_ok = host_fingerprint(path, &before_hash, &before_size) == 0;
+			check(comm_sdc(write_cmd, 0, (uint16_t)sectors, payload, 1) != 0 &&
+			      (last_status & SDC_FAILED),
+			      "$A2/$A3 beyond the mounted image reports failure");
+			check(before_ok && host_fingerprint(path, &after_hash, &after_size) == 0 &&
+			      before_hash == after_hash && before_size == after_size && after_size == size,
+			      "rejected disk write preserves every host byte and image length");
+		}
+		put_cmd(block, "M:");
+		check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "eject variant drive 0");
+		check(comm_sdc(0xe1, 0, 0, block, 1) == 0, "eject variant drive 1");
+	}
+	check(comm_sdc(0x82, 0, 18, block, 1) != 0, "$82 with no mounted disk fails");
+	check(comm_sdc(0x83, 0, 18, block, 1) != 0, "$83 with no mounted disk fails");
+	check(comm_sdc(0xa2, 0, 18, block, 1) != 0, "$A2 with no mounted disk fails");
+	check(comm_sdc(0xa3, 0, 18, block, 1) != 0, "$A3 with no mounted disk fails");
+	check(comm_sdc(0x88, 0, 0, block, 1) != 0 && (last_status & SDC_FAILED),
+	      "unsupported read opcode fails instead of fake success");
+	check(comm_sdc(0xa4, 0, 0, block, 1) != 0 && (last_status & SDC_FAILED),
+	      "unsupported write opcode fails instead of discarding data successfully");
+}
+
+static void test_invalid_jvc_geometry(void) {
+	static const uint8_t bad[][3] = {{17, 1, 1}, {18, 0, 1}, {18, 3, 1}, {18, 1, 2}};
+	unsigned size = 3 + DECB_DSK_BYTES;
+	uint8_t *image = calloc(1, size);
+	uint8_t block[SDC_BLOCK_SIZE];
+	char path[PATH_MAX];
+	if (!check(image != NULL, "allocate invalid JVC fixture")) return;
+	snprintf(path, sizeof(path), "%s/BADGEOM.DSK", root_path);
+	for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		memcpy(image, bad[i], sizeof(bad[i]));
+		check(write_file(path, image, size) == 0, "write unsupported JVC geometry");
+		put_cmd(block, "M:BADGEOM.DSK");
+		check(comm_sdc(0xe0, 0, 0, block, 1) != 0 && failed_bits(SDC_ERR_INVALID),
+		      "unsupported JVC sectors/sides/sector-size rejected");
+	}
+	free(image);
+}
+
+int main(void) {
+	char tmpl[] = "/tmp/cocosdc-fs-XXXXXX";
+	char path[PATH_MAX];
+	char hello[] = "Hello from sdc-root via m: raw blocks.";
+	char *root;
+	char foo[300];
+
+	root = mkdtemp(tmpl);
+	if (!root) {
+		perror("mkdtemp");
+		return 1;
+	}
+	snprintf(root_path, sizeof(root_path), "%s", root);
+
+	snprintf(path, sizeof(path), "%s/HELLO.TXT", root);
+	if (write_file(path, hello, sizeof(hello)) != 0) {
+		fprintf(stderr, "FAIL: write HELLO.TXT\n");
+		rm_path(root);
+		return 1;
+	}
+	snprintf(path, sizeof(path), "%s/GAMES", root);
+	if (mkdir(path, 0755) != 0) {
+		fprintf(stderr, "FAIL: mkdir GAMES\n");
+		rm_path(root);
+		return 1;
+	}
+	memset(foo, 0x5a, sizeof(foo));
+	foo[0] = 'F';
+	foo[1] = 'O';
+	foo[2] = 'O';
+	snprintf(path, sizeof(path), "%s/GAMES/FOO.BIN", root);
+	if (write_file(path, foo, sizeof(foo)) != 0) {
+		fprintf(stderr, "FAIL: write FOO.BIN\n");
+		rm_path(root);
+		return 1;
+	}
+
+	sdc_hw_reset(&hw);
+	sdc_fs_init(&fs);
+	if (sdc_fs_set_root(&fs, root) != 0) {
+		fprintf(stderr, "FAIL: set_root\n");
+		sdc_fs_free(&fs);
+		rm_path(root);
+		return 1;
+	}
+
+	test_version_reset();
+	test_missing_and_eject();
+	test_mount_read_info(hello, sizeof(hello));
+	test_case_partial_and_cwd();
+	test_create_write_lsn_latch();
+	test_slots_inuse();
+	test_dir_listing(hello, sizeof(hello));
+	test_mkdir_delete();
+	test_escape();
+	test_stream();
+	test_play();
+	test_dsk_mount_and_fdc();
+	test_startup_cfg_and_jvc();
+	test_decb_dskcon_and_glen_cfg();
+	test_mounted_dir_empty_vs_real_layout();
+	test_fdc_host_persist_and_ok_empty_dir();
+	test_lsn_command_variants();
+	test_invalid_jvc_geometry();
+	test_no_root();
+
+	sdc_fs_free(&fs);
+	rm_path(root);
+
+	if (nfail) {
+		fprintf(stderr, "%d/%d check(s) failed\n", nfail, ncheck);
+		return 1;
+	}
+	printf("cocosdc_fs: %d checks ok (mount/dir/LSN R/W/stream 512/Play/FDC DSK/startup.cfg/DECB DSKCON/DIR layout/host persist)\n", ncheck);
+	return 0;
+}

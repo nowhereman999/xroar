@@ -65,6 +65,11 @@ struct module * const *filereq_module_list = default_filereq_module_list;
 struct module *filereq_module = NULL;
 
 // UI modules
+//
+// Default is the first built module.  On Apple, GTK+ 3 typically yields a
+// blank/white window, so Cocoa (`-ui macosx`) and the basic SDL UI come
+// first.  With SDL3, both use SDL3 video and the Cocoa menu bar.  There is
+// no module named `sdl2`.
 
 extern struct ui_module ui_gtk3_module;
 extern struct ui_module ui_gtk2_module;
@@ -74,6 +79,14 @@ extern struct ui_module ui_wasm_module;
 extern struct ui_module ui_cocoa_module;
 extern struct ui_module ui_sdl_module;
 static struct ui_module * const default_ui_module_list[] = {
+#if defined(__APPLE__)
+#ifdef HAVE_COCOA
+	&ui_cocoa_module,
+#endif
+#ifdef WANT_UI_SDL
+	&ui_sdl_module,
+#endif
+#endif
 #ifdef HAVE_GTK3
 	&ui_gtk3_module,
 #endif
@@ -88,11 +101,13 @@ static struct ui_module * const default_ui_module_list[] = {
 #ifdef HAVE_WASM
 	&ui_wasm_module,
 #endif
+#if !defined(__APPLE__)
 #ifdef HAVE_COCOA
 	&ui_cocoa_module,
 #endif
 #ifdef WANT_UI_SDL
 	&ui_sdl_module,
+#endif
 #endif
 	&ui_null_module,
 	NULL

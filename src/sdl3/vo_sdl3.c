@@ -121,22 +121,24 @@ bool sdl_vo_init(struct ui_sdl3_interface *uisdl3) {
 		// fall through
 
 	case VO_RENDER_FMT_RGBA8:
-		vosdl->texture.format = SDL_PIXELFORMAT_RGBA8888;
+		/* RGBX/XRGB: no alpha.  SDL3 Metal defaults to BLEND and a
+		 * swapped A byte makes the whole CoCo 3 framebuffer black. */
+		vosdl->texture.format = SDL_PIXELFORMAT_RGBX8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
 	case VO_RENDER_FMT_BGRA8:
-		vosdl->texture.format = SDL_PIXELFORMAT_BGRA8888;
+		vosdl->texture.format = SDL_PIXELFORMAT_BGRX8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
 	case VO_RENDER_FMT_ARGB8:
-		vosdl->texture.format = SDL_PIXELFORMAT_ARGB8888;
+		vosdl->texture.format = SDL_PIXELFORMAT_XRGB8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
 	case VO_RENDER_FMT_ABGR8:
-		vosdl->texture.format = SDL_PIXELFORMAT_ABGR8888;
+		vosdl->texture.format = SDL_PIXELFORMAT_XBGR8888;
 		vosdl->texture.pixel_size = 4;
 		break;
 
@@ -302,8 +304,36 @@ static void recreate_renderer(struct ui_sdl3_interface *uisdl3) {
 	SDL_PropertiesID props = SDL_CreateProperties();
 	SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, uisdl3->vo_window);
 	SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, vo->vsync ? 1 : 0);
+#ifdef __APPLE__
+	/* Homebrew 1.12.1 macosx+SDL2 shows CoCo 3 video.  SDL3's default
+	 * Metal renderer on this naive vo port stays black; prefer OpenGL
+	 * unless the user set SDL_RENDER_DRIVER. */
+	{
+		const char *want = SDL_getenv("SDL_RENDER_DRIVER");
+		if (!want || !*want) {
+			SDL_SetStringProperty(props, SDL_PROP_RENDERER_CREATE_NAME_STRING, "opengl");
+		}
+		vosdl->sdl_renderer = SDL_CreateRendererWithProperties(props);
+		if (!vosdl->sdl_renderer && (!want || !*want)) {
+			LOG_MOD_SUB_DEBUG(1, "sdl", "vo", "OpenGL renderer failed: %s; trying default\n", SDL_GetError());
+			SDL_DestroyProperties(props);
+			props = SDL_CreateProperties();
+			SDL_SetPointerProperty(props, SDL_PROP_RENDERER_CREATE_WINDOW_POINTER, uisdl3->vo_window);
+			SDL_SetNumberProperty(props, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, vo->vsync ? 1 : 0);
+			vosdl->sdl_renderer = SDL_CreateRendererWithProperties(props);
+		}
+	}
+#else
 	vosdl->sdl_renderer = SDL_CreateRendererWithProperties(props);
+#endif
 	SDL_DestroyProperties(props);
+
+	if (vosdl->sdl_renderer) {
+		const char *rname = SDL_GetRendererName(vosdl->sdl_renderer);
+		LOG_MOD_SUB_DEBUG(1, "sdl", "vo", "renderer %s\n", rname ? rname : "?");
+		SDL_SetRenderDrawColor(vosdl->sdl_renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
+		SDL_SetRenderDrawBlendMode(vosdl->sdl_renderer, SDL_BLENDMODE_NONE);
+	}
 }
 
 // We need to recreate the texture whenever the viewport changes (it needs to
@@ -324,7 +354,20 @@ static void recreate_texture(struct ui_sdl3_interface *uisdl3) {
 	int vp_w = vr->viewport.w;
 	int vp_h = vr->viewport.h;
 
-	// Set scaling method according to options and window dimensions
+	// Create new, then set scale/blend on the real texture.  SDL3's
+	// Metal renderer defaults to BLENDMODE_BLEND; with a swapped alpha
+	// byte that makes the whole framebuffer invisible (black).  The
+	// emulator buffer is opaque.
+	vosdl->texture.texture = SDL_CreateTexture(vosdl->sdl_renderer, vosdl->texture.format, SDL_TEXTUREACCESS_STREAMING, vp_w, vp_h);
+	if (!vosdl->texture.texture) {
+		LOG_MOD_SUB_ERROR("sdl", "vo", "failed to create texture: %s\n", SDL_GetError());
+		abort();
+	}
+
+	if (!SDL_SetTextureBlendMode(vosdl->texture.texture, SDL_BLENDMODE_NONE)) {
+		LOG_MOD_SUB_DEBUG(2, "sdl", "vo", "SetTextureBlendMode: %s\n", SDL_GetError());
+	}
+
 	if (!vosdl->scale_60hz && (vo->gl_filter == VO_GL_FILTER_NEAREST ||
 				   (vo->gl_filter == VO_GL_FILTER_AUTO &&
 				    (vosdl->window_area.w % vp_w) == 0 &&
@@ -332,13 +375,6 @@ static void recreate_texture(struct ui_sdl3_interface *uisdl3) {
 		SDL_SetTextureScaleMode(vosdl->texture.texture, SDL_SCALEMODE_NEAREST);
 	} else {
 		SDL_SetTextureScaleMode(vosdl->texture.texture, SDL_SCALEMODE_LINEAR);
-	}
-
-	// Create new
-	vosdl->texture.texture = SDL_CreateTexture(vosdl->sdl_renderer, vosdl->texture.format, SDL_TEXTUREACCESS_STREAMING, vp_w, vp_h);
-	if (!vosdl->texture.texture) {
-		LOG_MOD_SUB_ERROR("sdl", "vo", "failed to create texture\n");
-		abort();
 	}
 
 	vr->buffer_pitch = vr->viewport.w;
@@ -555,13 +591,18 @@ static void draw(void *sptr) {
 	struct vo_sdl_interface *vosdl = (struct vo_sdl_interface *)vo;
 	struct vo_render *vr = vo->renderer;
 
-	SDL_UpdateTexture(vosdl->texture.texture, NULL, vosdl->texture.pixels, vr->viewport.w * vosdl->texture.pixel_size);
+	if (!SDL_UpdateTexture(vosdl->texture.texture, NULL, vosdl->texture.pixels, vr->viewport.w * vosdl->texture.pixel_size)) {
+		LOG_MOD_SUB_DEBUG(2, "sdl", "vo", "UpdateTexture: %s\n", SDL_GetError());
+	}
+	SDL_SetRenderDrawColor(vosdl->sdl_renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
 	SDL_RenderClear(vosdl->sdl_renderer);
 	SDL_FRect dstrect = {
-		.x = vo->picture_area.x, .y = vo->picture_area.y,
-		.w = vo->picture_area.w, .h = vo->picture_area.h
+		.x = (float)vo->picture_area.x, .y = (float)vo->picture_area.y,
+		.w = (float)vo->picture_area.w, .h = (float)vo->picture_area.h
 	};
-	SDL_RenderTexture(vosdl->sdl_renderer, vosdl->texture.texture, NULL, &dstrect);
+	if (!SDL_RenderTexture(vosdl->sdl_renderer, vosdl->texture.texture, NULL, &dstrect)) {
+		LOG_MOD_SUB_DEBUG(2, "sdl", "vo", "RenderTexture: %s\n", SDL_GetError());
+	}
 	SDL_RenderPresent(vosdl->sdl_renderer);
 }
 

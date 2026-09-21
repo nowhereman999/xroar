@@ -56,6 +56,7 @@
 #include "becker.h"
 #include "cart.h"
 #include "crclist.h"
+#include "decb_bin.h"
 #include "dkbd.h"
 #include "events.h"
 #include "fs.h"
@@ -224,6 +225,8 @@ struct private_cfg {
 		char *fd[4];  // floppy disks, one per drive
 		char *hd[2];  // block devices, one per slot
 		struct slist *binaries;  // loaded in order
+		char *inject_bin;  // DECB/DragonDOS image poked after startup
+		int inject_exec;   // set PC from postamble after inject
 		char *tape;  // input tape
 		char *tape_write;  // output tape
 		char *text;  // text typed from file
@@ -310,6 +313,7 @@ static struct private_cfg private_cfg = {
 	.cart.becker = ANY_AUTO,
 	.cart.autorun = ANY_AUTO,
 	.cart.mpi.initial_slot = ANY_AUTO,
+	.file.inject_exec = 1,
 	.tape.fast = 1,
 	.tape.pad_auto = 1,
 	.vo.picture = UI_AUTO,
@@ -608,6 +612,11 @@ static char const * const default_config[] = {
 	"cart-desc 'IDE Interface'",
 	"cart-type ide",
 	"cart-becker",
+	// CoCoSDC (Phase D: FileAccess + stream + Play pacing)
+	"cart cocosdc",
+	"cart-desc 'CoCoSDC (Phase D)'",
+	"cart-type cocosdc",
+	"cart-rom @sdcdos",
 #ifndef HAVE_WASM
 #ifdef WANT_EXPERIMENTAL
 	// Ikon Ultra Drive cartridge
@@ -713,6 +722,8 @@ static char const * const default_config[] = {
 	// RSDOS
 	"romlist rsdos=disk11,disk10",
 	"romlist cp450=cp450dsk,@rsdos",
+	// CoCoSDC SDC-DOS flash (Hardware → Cartridge and -cart cocosdc)
+	"romlist sdcdos=sdcdos,sdc-dos,sdc_dos,SDCDOS",
 	// Delta
 	"romlist delta=delta2,delta1a,delta19,delta,deltados,'Premier Micros - DeltaDOS'",
 #ifndef HAVE_WASM
@@ -813,6 +824,15 @@ static char const * const default_config[] = {
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void do_load_binaries(void *);
+static void do_inject_bin(void *);
+
+/* Parsed -inject-bin image, validated at CLI so Studio sees errors immediately. */
+static struct decb_bin inject_image;
+static int inject_image_ready;
+
+/* Emulated delay after reset so Super ECB has typically reached OK and low
+ * RAM is the BASIC workspace (same window as -run FILE.bin). */
+#define INJECT_BIN_DELAY_MS 2000
 
 /*
 // I will want these back in some form, but they've never been used yet, so
@@ -864,6 +884,26 @@ static struct {
 #endif
 #ifndef CONFPATH
 # define CONFPATH "."
+#endif
+
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+// SDL3 Mac builds historically compiled the Unix ROMPATH/CONFPATH because
+// UI_COCOA is false without SDL2.  Always search ~/Library/XRoar first.
+#define XROAR_APPLE_ROMS "~/Library/XRoar/roms"
+#define XROAR_APPLE_CONF "~/Library/XRoar"
+
+static char *apple_prepend_dir(char *old, const char *prefix) {
+	if (old && strstr(old, "Library/XRoar"))
+		return old;
+	size_t n = strlen(prefix) + 1 + (old ? strlen(old) : 0) + 1;
+	char *np = xmalloc(n);
+	if (old && *old)
+		snprintf(np, n, "%s:%s", prefix, old);
+	else
+		snprintf(np, n, "%s", prefix);
+	free(old);
+	return np;
+}
 #endif
 
 /** Processes options from a builtin list, a configuration file, and the
@@ -940,6 +980,9 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 	if (!no_builtin) {
 		// Set a default ROM search path if required.
 		xroar.cfg.file.rompath = xstrdup(ROMPATH);
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+		xroar.cfg.file.rompath = apple_prepend_dir(xroar.cfg.file.rompath, XROAR_APPLE_ROMS);
+#endif
 		// Process builtin directives
 		for (unsigned i = 0; i < ARRAY_N_ELEMENTS(default_config); i++) {
 			xconfig_parse_line(&xroar_option_set, default_config[i]);
@@ -978,9 +1021,19 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 		if (!xroar_conf_path) {
 			xroar_conf_path = CONFPATH;
 		}
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+		sds apple_conf_path = NULL;
+		if (!strstr(xroar_conf_path, "Library/XRoar")) {
+			apple_conf_path = sdscatprintf(sdsempty(), "%s:%s", XROAR_APPLE_CONF, xroar_conf_path);
+			xroar_conf_path = apple_conf_path;
+		}
+#endif
 		if (!conffile) {
 			conffile = find_in_path(xroar_conf_path, "xroar.conf");
 		}
+#if defined(__APPLE__) && !defined(HAVE_WASM)
+		sdsfree(apple_conf_path);
+#endif
 		if (conffile) {
 			(void)xconfig_parse_file(&xroar_option_set, conffile);
 			sdsfree(conffile);
@@ -1008,6 +1061,9 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 	if (ret != XCONFIG_OK) {
 		exit(EXIT_FAILURE);
 	}
+
+	LOG_MOD_DEBUG(2, "xroar", "rompath: %s\n",
+		      xroar.cfg.file.rompath ? xroar.cfg.file.rompath : "(none)");
 
 	// Unapplied machine options on the command line should apply to the
 	// one we're going to pick to run, so decide that now.
@@ -1048,6 +1104,26 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 	}
 
 	// Finished processing commmand line.
+
+	// Validate -inject-bin immediately so a missing/malformed DECB BIN
+	// is reported on stderr before the UI starts.  (WASM fetches later.)
+#ifndef HAVE_WASM
+	if (private_cfg.file.inject_bin) {
+		char err[256];
+		if (decb_bin_load_file(private_cfg.file.inject_bin, &inject_image,
+		                       err, sizeof err) != 0) {
+			fprintf(stderr, "[inject] ERROR: %s: %s\n",
+			        private_cfg.file.inject_bin, err);
+			exit(EXIT_FAILURE);
+		}
+		inject_image_ready = 1;
+		if (private_cfg.file.inject_exec && inject_image.has_exec
+		    && inject_image.exec == 0) {
+			fprintf(stderr, "[inject] WARNING: %s: postamble EXEC is $0000; not setting PC\n",
+			        private_cfg.file.inject_bin);
+		}
+	}
+#endif
 
 	// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -1335,6 +1411,7 @@ struct ui_interface *xroar_init(int argc, char **argv) {
 	for (struct slist *iter = private_cfg.file.binaries; iter; iter = iter->next) {
 		wasm_wget((const char *)iter->data);
 	}
+	wasm_wget(private_cfg.file.inject_bin);
 	for (unsigned i = 0; i < 4; ++i) {
 		wasm_wget(private_cfg.file.fd[i]);
 	}
@@ -1417,6 +1494,14 @@ void xroar_init_finish(void) {
 		// Binaries - delay loading by 2s
 		if (private_cfg.file.binaries) {
 			event_queue_auto(UI_EVENT_LIST, DELEGATE_AS0(void, do_load_binaries, NULL), EVENT_MS(2000));
+		}
+
+		/* Direct RAM inject: same delay as -run FILE.bin so BASIC has
+		 * typically reached OK.  Uses CPU addresses through the current
+		 * GIME/MMU (LOADM-equivalent); does not attach floppy or SDC. */
+		if (private_cfg.file.inject_bin) {
+			event_queue_auto(UI_EVENT_LIST, DELEGATE_AS0(void, do_inject_bin, NULL),
+			                 EVENT_MS(INJECT_BIN_DELAY_MS));
 		}
 	}
 
@@ -1502,6 +1587,8 @@ void xroar_shutdown(void) {
 	vdrive_interface_free(xroar.vdrive_interface);
 	tape_interface_free(xroar.tape_interface);
 	hk_shutdown();
+	decb_bin_free(&inject_image);
+	inject_image_ready = 0;
 	xconfig_shutdown(&xroar_option_set);
 	if (xroar.ui_interface) {
 		DELEGATE_SAFE_CALL(xroar.ui_interface->free);
@@ -1734,6 +1821,39 @@ static void do_load_binaries(void *sptr) {
 	}
 	slist_free_full(private_cfg.file.binaries, (slist_free_func)free);
 	private_cfg.file.binaries = NULL;
+}
+
+static void do_inject_bin(void *sptr) {
+	(void)sptr;
+	const char *filename = private_cfg.file.inject_bin;
+	if (!filename) {
+		return;
+	}
+#ifndef HAVE_WASM
+	if (!inject_image_ready) {
+		fprintf(stderr, "[inject] ERROR: %s: image was not parsed at startup\n", filename);
+		return;
+	}
+#else
+	if (!inject_image_ready) {
+		char err[256];
+		if (decb_bin_load_file(filename, &inject_image, err, sizeof err) != 0) {
+			fprintf(stderr, "[inject] ERROR: %s: %s\n", filename, err);
+			return;
+		}
+		inject_image_ready = 1;
+	}
+#endif
+	if (bin_apply_image(&inject_image, private_cfg.file.inject_exec) != 0) {
+		fprintf(stderr, "[inject] ERROR: %s: failed to poke machine RAM\n", filename);
+	} else {
+		LOG_MOD_DEBUG(1, "inject", "%s: poked %zu block(s) via CPU map%s\n",
+		              filename, inject_image.nblocks,
+		              (private_cfg.file.inject_exec && inject_image.exec)
+		              ? "; PC set from EXEC" : "");
+	}
+	decb_bin_free(&inject_image);
+	inject_image_ready = 0;
 }
 
 void xroar_load_disk(const char *filename, int drive, bool autorun) {
@@ -2387,6 +2507,14 @@ static void xroar_ui_set_cartridge(void *sptr, int tag, void *smsg) {
 			}
 			for (unsigned i = 0; i < 2; ++i) {
 				ui_update_state(-1, ui_tag_hd_filename, i, private_cfg.file.hd[i]);
+			}
+			/* Cart reset alone leaves the 6809 in ECB / Disk BASIC.
+			 * Studio CoCoSDC Run starts with -cart cocosdc so the
+			 * following machine hard reset enters SDC-DOS.  Menu
+			 * Hardware → Cartridge after a Floppy session did not.
+			 * Hard-reset now so CoCoSDC is the same either way. */
+			if (cc->type && 0 == c_strcasecmp(cc->type, "cocosdc")) {
+				xroar_hard_reset();
 			}
 		} else {
 			cc = NULL;
@@ -3221,6 +3349,7 @@ static struct xconfig_option const xroar_options[] = {
 	{ XC_SET_INT1("cart-autorun", &private_cfg.cart.autorun) },
 	{ XC_SET_INT1("cart-becker", &private_cfg.cart.becker) },
 	{ XC_SET_STRING_LIST_NE("cart-opt", &private_cfg.cart.opts) },
+	{ XC_SET_STRING_NE("sdc-root", &xroar.cfg.sdc.root) },
 
 	/* Multi-Pak Interface: */
 	{ XC_SET_INT("mpi-slot", &private_cfg.cart.mpi.initial_slot) },
@@ -3234,6 +3363,8 @@ static struct xconfig_option const xroar_options[] = {
 	/* Files: */
 	{ XC_CALL_STRING_NE("load", &add_load) },
 	{ XC_CALL_STRING_NE("run", &add_run) },
+	{ XC_SET_STRING_NE("inject-bin", &private_cfg.file.inject_bin) },
+	{ XC_SET_INT1("inject-exec", &private_cfg.file.inject_exec) },
 	{ XC_SET_STRING_NE("load-fd0", &private_cfg.file.fd[0]) },
 	{ XC_SET_STRING_NE("load-fd1", &private_cfg.file.fd[1]) },
 	{ XC_SET_STRING_NE("load-fd2", &private_cfg.file.fd[2]) },
@@ -3446,6 +3577,8 @@ static void helptext(void) {
 "    -cart-rom2 NAME         second ROM image to load ($E000-)\n"
 "    -cart-autorun           autorun cartridge\n"
 "    -cart-becker            enable becker port where supported\n"
+"    -cart-opt STRING        cartridge type-specific option\n"
+"                            (cocosdc: sdc-root=DIR)\n"
 "    -mpi-slot N             (MPI) initially select slot (0-3)\n"
 "    -mpi-load-cart [N=]NAME\n"
 "                            (MPI) insert cartridge into next or numbered slot\n"
@@ -3480,6 +3613,7 @@ static void helptext(void) {
 " Hard disks:\n"
 "  -load-hdX FILE        use hard disk image FILE as drive X (0-1, e.g. for ide)\n"
 "  -load-sd FILE         use SD card image FILE (e.g. for mooh, nx32)\n"
+"  -sdc-root DIR         host directory mapped as CoCoSDC SD card root\n"
 "\n"
 
 " Keyboard:\n"
@@ -3512,6 +3646,10 @@ static void helptext(void) {
 " Files:\n"
 "  -load FILE            load or attach FILE\n"
 "  -run FILE             load or attach FILE and attempt autorun\n"
+"  -inject-bin FILE      poke DECB/DragonDOS BIN into RAM after startup\n"
+"                        (no disk/SDC LOADM; CoCo 3 uses current GIME/MMU)\n"
+"  -inject-exec          after -inject-bin, set PC from postamble EXEC [default]\n"
+"  -no-inject-exec       poke RAM only; leave PC where BASIC left it\n"
 "  -load-fdX FILE        insert disk image FILE into floppy drive X (0-3)\n"
 "  -load-hdX FILE        use hard disk image FILE as drive X (0-1, e.g. for ide)\n"
 "  -load-sd FILE         use SD card image FILE (e.g. for mooh, nx32)\n"
@@ -3699,9 +3837,12 @@ static void config_print_all(FILE *f, bool all) {
 	xroar_cfg_print_string(f, all, "load-fd3", private_cfg.file.fd[3], NULL);
 	xroar_cfg_print_string(f, all, "load-hd0", private_cfg.file.hd[0], NULL);
 	xroar_cfg_print_string(f, all, "load-hd1", private_cfg.file.hd[1], NULL);
+	xroar_cfg_print_string(f, all, "sdc-root", xroar.cfg.sdc.root, NULL);
 	xroar_cfg_print_string(f, all, "load-tape", private_cfg.file.tape, NULL);
 	xroar_cfg_print_string(f, all, "tape-write", private_cfg.file.tape_write, NULL);
 	xroar_cfg_print_string(f, all, "load-text", private_cfg.file.text, NULL);
+	xroar_cfg_print_string(f, all, "inject-bin", private_cfg.file.inject_bin, NULL);
+	xroar_cfg_print_bool(f, all, "inject-exec", private_cfg.file.inject_exec, 1);
 	fputs("\n", f);
 
 	fputs("# Cassettes\n", f);

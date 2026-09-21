@@ -118,7 +118,8 @@ void rombank_report(struct rombank *rb, const char *par, const char *name) {
 		}
 		LOG_PRINT("\tSlot %3u: ", i);
 		if (rb->d[i]) {
-			LOG_PRINT("CRC32 0x%08x FILE %s", rb->slot[i].crc32, basename);
+			LOG_PRINT("CRC32 0x%08x FILE %s", rb->slot[i].crc32,
+				  (logging.level >= 2 && filename) ? filename : basename);
 			if (rb->slot[i].offset > 0) {
 				LOG_PRINT(" +0x%06lx", (unsigned long)rb->slot[i].offset);
 			}
@@ -161,7 +162,25 @@ bool rombank_verify_crc(struct rombank *rb, const char *name, int slot,
 		present = 1;
 	}
 
-	bool valid = present && crclist_match(crclist, check_crc32);
+	uint32_t expected = crc32 ? *crc32 : 0;
+	bool listed = present && crclist_match(crclist, check_crc32);
+	/* 1.12.1 accepts NTSC Super ECB when coco3.c preloads 0xb4c88d6c.
+	   Keep that even if @coco3 was wiped by xroar.conf. */
+	bool expected_ok = present && expected != 0 && check_crc32 == expected;
+	if (!listed && !expected_ok && present) {
+		for (unsigned i = 0; i < rb->nslots; i++) {
+			if (!rb->d[i]) {
+				continue;
+			}
+			uint32_t sc = rb->slot[i].crc32;
+			if (crclist_match(crclist, sc) || (expected != 0 && sc == expected)) {
+				check_crc32 = sc;
+				expected_ok = 1;
+				break;
+			}
+		}
+	}
+	bool valid = listed || expected_ok;
 	bool forced = present && !valid && force;
 
 	if (forced) {
@@ -181,7 +200,18 @@ bool rombank_verify_crc(struct rombank *rb, const char *name, int slot,
 		return 1;
 	}
 
-	LOG_DEBUG(1, "\t%s CRC32 INVALID\n", name);
+	if (!present) {
+		LOG_DEBUG(1, "\t%s CRC32 INVALID (no image loaded)\n", name);
+	} else {
+		char listbuf[256];
+		crclist_snprintf(listbuf, sizeof(listbuf), crclist);
+		LOG_DEBUG(1, "\t%s CRC32 INVALID (got 0x%08x, list %s)\n",
+			  name, check_crc32, listbuf[0] ? listbuf : (crclist ? crclist : "?"));
+		if (check_crc32 == 0xb4c88d6c || check_crc32 == 0xff050d80) {
+			LOG_DEBUG(1, "\t(0x%08x is documented Super ECB; INVALID here is the CRC *list*, not a bad dump. Try -no-c)\n",
+				  check_crc32);
+		}
+	}
 	return 0;
 }
 

@@ -2054,6 +2054,12 @@ here for reference.
 @tab Load or attach @var{file}.  XRoar will try to do the right thing based on the file type (usually determined by file extension).
 @item @option{-run @var{file}}
 @tab As @option{-load}, but try to autorun the file after attaching.
+@item @option{-inject-bin @var{file}}
+@tab Parse a CoCo RS-DOS (DECB) or DragonDOS binary and poke its blocks into RAM after startup, without using disk or CoCoSDC @code{LOADM}.  On CoCo 3 this uses 16-bit CPU addresses through the current GIME/MMU (LOADM-equivalent).  A missing or malformed file is reported on stderr and XRoar exits.  After a 2 s emulated delay (so BASIC has typically reached @code{OK}), the postamble EXEC address is jumped to unless @option{-no-inject-exec} is given.
+@item @option{-inject-exec}
+@tab After @option{-inject-bin}, set PC from the postamble EXEC address (default).
+@item @option{-no-inject-exec}
+@tab Poke RAM only; leave PC where BASIC left it.
 @item @option{-load-tape @var{file}}
 @tab Attach @var{file} as tape image for reading.  @xref{Cassettes}.
 @item @option{-tape-write @var{file}}

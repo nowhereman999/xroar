@@ -30,6 +30,7 @@ xroar_SOURCES = \
 	crc32.c crc32.h \
 	crclist.c crclist.h \
 	debug.c debug.h \
+	decb_bin.c decb_bin.h \
 	dkbd.c dkbd.h \
 	events.c events.h \
 	filter.c filter.h \
@@ -136,6 +137,9 @@ xroar_SOURCES += \
 	gmc.c \
 	ide.c ide.h \
 	idecart.c idecart.h \
+	cocosdc.c cocosdc_hw.h \
+	cocosdc_fs.c cocosdc_fs.h \
+	cocosdc_fdc.c cocosdc_fdc.h \
 	mooh.c \
 	mpi.c \
 	nx32.c \
@@ -226,6 +230,16 @@ xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"%LOCALAPPDATA%\\\\XRoar\"
 xroar_CFLAGS += -DROMPATH=\":%LOCALAPPDATA%\\\\XRoar\\\\roms:%USERPROFILE%\\\\Documents\\\\XRoar\\\\roms:%USERPROFILE%\\\\AppData\\\\Roaming\\\\XRoar\\\\roms\"
 xroar_CFLAGS += -DCONFPATH=\":%LOCALAPPDATA%\\\\XRoar:%USERPROFILE%\\\\Documents\\\\XRoar:%USERPROFILE%\\\\AppData\\\\Roaming\\\\XRoar\"
 else
+# Mac ROM/config dirs belong to Darwin, not the Cocoa UI.  An SDL3
+# `--without-gtk3` build has no UI_COCOA and used to search only
+# ~/.xroar/roms, so a good coco3.rom in ~/Library/XRoar/roms never loaded
+# (CRC32 INVALID, black screen).
+if DARWIN
+xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
+xroar_OBJCFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
+xroar_CFLAGS += -DROMPATH=\"~/Library/XRoar/roms:~/.xroar/roms:$(datadir)/xroar/roms:\"
+xroar_CFLAGS += -DCONFPATH=\"~/Library/XRoar:~/.xroar:$(sysconfdir):$(datadir)/xroar\"
+else
 if UI_COCOA
 xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
 xroar_OBJCFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
@@ -235,6 +249,7 @@ else
 xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/.xroar\"
 xroar_CFLAGS += -DROMPATH=\"~/.xroar/roms:$(datadir)/xroar/roms:\"
 xroar_CFLAGS += -DCONFPATH=\"~/.xroar:$(sysconfdir):$(datadir)/xroar\"
+endif
 endif
 endif
 endif
@@ -270,6 +285,11 @@ xroar_CFLAGS += $(GL_CFLAGS)
 xroar_LDADD += $(GL_LIBS)
 xroar_SOURCES += \
 	vo_opengl.c vo_opengl.h
+if DARWIN
+# Apple OpenGL headers are deprecated; must be defined before those headers.
+xroar_CFLAGS += -DGL_SILENCE_DEPRECATION
+xroar_OBJCFLAGS += -DGL_SILENCE_DEPRECATION
+endif
 endif
 
 # GTK+ 3 user interface
@@ -420,18 +440,22 @@ endif
 
 endif
 
-# Mac OS X special case SDL user interface
+# Mac OS X Cocoa menu bar.
+# SDL3 video when that backend is selected; SDL2 otherwise.
+# NSMenu is installed for both `-ui macosx` and (SDL3) `-ui sdl`.
 
-if UI_SDL2
 if UI_COCOA
 xroar_CFLAGS += $(COCOA_CFLAGS)
-xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL_CFLAGS)
 xroar_LDADD += $(COCOA_LIBS)
+if UI_SDL3
+xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL3_CFLAGS)
+else
+xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL_CFLAGS)
+endif
 xroar_SOURCES += \
 	macosx/filereq_cocoa.m \
 	macosx/hkbd_darwin.c macosx/hkbd_darwin.h \
 	macosx/ui_macosx.m macosx/ui_macosx.h
-endif
 endif
 
 EXTRA_DIST += \
@@ -590,3 +614,30 @@ if FILEREQ_CLI
 xroar_SOURCES += \
 	filereq_cli.c
 endif
+
+# Host-side CoCoSDC tests: CommSDC register engine, temp sdc-root, stream.
+# No SDL, ROMs, or CoCo program.  `make check` runs them after ./configure;
+# ./tools/run-cocosdc-tests.sh works without autotools.
+
+check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test cocosdc_io_error_test decb_bin_test
+TESTS = $(check_PROGRAMS)
+
+cocosdc_hw_test_SOURCES = $(top_srcdir)/tools/cocosdc_hw_test.c
+cocosdc_hw_test_CPPFLAGS = -I$(top_srcdir)/src
+cocosdc_hw_test_CFLAGS = -std=c11 -Wall
+cocosdc_hw_test_LDADD =
+
+cocosdc_fs_test_SOURCES = $(top_srcdir)/tools/cocosdc_fs_test.c cocosdc_fs.c cocosdc_fdc.c
+cocosdc_fs_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+cocosdc_fs_test_CFLAGS = -std=c11 -Wall
+cocosdc_fs_test_LDADD =
+
+cocosdc_io_error_test_SOURCES = $(top_srcdir)/tools/cocosdc_io_error_test.c
+cocosdc_io_error_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+cocosdc_io_error_test_CFLAGS = -std=c11 -Wall
+cocosdc_io_error_test_LDADD =
+
+decb_bin_test_SOURCES = $(top_srcdir)/tools/decb_bin_test.c decb_bin.c
+decb_bin_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+decb_bin_test_CFLAGS = -std=c11 -Wall
+decb_bin_test_LDADD =

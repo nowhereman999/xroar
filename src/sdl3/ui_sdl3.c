@@ -48,6 +48,11 @@ struct ui_sdl3_interface *ui_sdl_allocate(size_t usize) {
 	// Be sure we've not made more than one of these
 	assert(global_uisdl3 == NULL);
 
+#ifdef __APPLE__
+	if (!SDL_getenv("SDL_RENDER_DRIVER")) {
+		SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+	}
+#endif
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
 		LOG_MOD_ERROR("sdl", "failed to initialise video: %s\n", SDL_GetError());
 		return NULL;
@@ -112,14 +117,29 @@ void ui_sdl_run(void *sptr) {
 
 static void *ui_sdl_new(void *cfg);
 
+#ifdef HAVE_COCOA
+/* Same NSMenu bar as -ui macosx (File / View / Hardware / Tool / …). */
+extern void *ui_cocoa_new(void *cfg);
+#endif
+
 struct ui_module ui_sdl_module = {
+#ifdef HAVE_COCOA
+	.common = { .name = "sdl", .description = "SDL3 UI with Mac menu bar",
+#else
 	.common = { .name = "sdl", .description = "SDL3 UI",
+#endif
 	            .new = ui_sdl_new,
 	},
 	.joystick_module_list = sdl_js_modlist,
 };
 
 static void *ui_sdl_new(void *cfg) {
+#ifdef HAVE_COCOA
+	/* Darwin SDL3 builds install the Cocoa menu bar on this module too,
+	 * so the default name `-ui sdl` is not menuless.  Studio's `-ui macosx`
+	 * is the same constructor. */
+	return ui_cocoa_new(cfg);
+#else
 	struct ui_cfg *ui_cfg = cfg;
 
 	struct ui_sdl3_interface *uisdl3 = ui_sdl_allocate(sizeof(*uisdl3));
@@ -141,6 +161,7 @@ static void *ui_sdl_new(void *cfg) {
 #endif
 
 	return uisdl3;
+#endif /* !HAVE_COCOA */
 }
 
 #endif

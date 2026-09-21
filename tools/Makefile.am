@@ -13,6 +13,12 @@ font2c_LDADD = $(SDL_LIBS) $(SDL2_IMAGE_LIBS)
 font2c_SOURCES = font2c.c
 
 EXTRA_DIST += \
+	cocosdc_hw_test.c \
+	cocosdc_fs_test.c \
+	cocosdc_io_error_test.c \
+	decb_bin_test.c \
+	run-cocosdc-tests.sh \
+	run-cocosdc-rom-tests.py \
 	hkbd_lang_tables.pl \
 	html2man.pl \
 	keycodes/macintosh \

@@ -540,10 +540,17 @@ static bool coco3_finish(struct part *p) {
                 if (tmp) {
                         rombank_load_image(mcc3->ROM0, 0, tmp, 0);
                         sdsfree(tmp);
-                }
+                } else {
+			LOG_MOD_WARN("coco3", "BASIC ROM not found (romlist %s, rompath %s)\n",
+				     mc->extbas_rom,
+				     xroar.cfg.file.rompath ? xroar.cfg.file.rompath : "(none)");
+		}
 	}
 
-	// Report and check CRC (Super Extended Colour BASIC)
+	// Report and check CRC (Super Extended Colour BASIC).
+	// has_secb is unused for fetch/video; 1.12.1 used this same call.
+	// Preload NTSC 0xb4c88d6c so verify accepts Glen’s dump even if
+	// @coco3 was wiped by xroar.conf.
 	rombank_report(mcc3->ROM0, "coco3", "Super Extended Colour BASIC");
 	mcc3->crc_secb = 0xb4c88d6c;  // Super Extended Colour BASIC (NTSC)
 	mcc3->has_secb = rombank_verify_crc(mcc3->ROM0, "Super Extended Colour BASIC", -1, "@coco3", xroar.cfg.force_crc_match, &mcc3->crc_secb);

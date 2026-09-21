@@ -274,7 +274,10 @@ interface:
    * SDL 2 (https://libsdl.org/) provides a simpler interface, but extra
      code for Mac OS X+ adds some basic menus and file requester
      dialogs.  For non-Linux systems, it may also be the easiest way to
-     get support for joysticks and audio.
+     get support for joysticks and audio.  This fork also attaches that
+     Mac menu bar to SDL 3, so a Darwin build does not need
+     '--without-sdl3' to get File / View / Hardware / Tool.
+     '-ui macosx' and '-ui sdl' both show it.
 
    * PulseAudio or ALSA can also be used for audio support.  Older code
      still exists for OSS and Jack, but these have not been tested for a

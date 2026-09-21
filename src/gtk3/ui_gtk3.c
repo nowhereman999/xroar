@@ -290,6 +290,10 @@ static void *ui_gtk3_new(void *cfg) {
 	// Be sure we've not made more than one of these
 	assert(global_uigtk3 == NULL);
 
+#if defined(__APPLE__)
+	LOG_MOD_WARN("gtk3", "GTK+ 3 video is untested on macOS and is often a blank/white window; use -ui sdl (SDL3) or rebuild with --without-gtk3\n");
+#endif
+
 #ifdef HAVE_X11
 	// Force use of X11 backend.  If we don't do this, the call to
 	// gdk_x11_get_default_xdisplay() later will still return some non-NULL

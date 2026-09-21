@@ -57,6 +57,7 @@ extern const struct cart_partdb_entry deltados_part;
 extern const struct cart_partdb_entry dragondos_part;
 extern const struct cart_partdb_entry gmc_part;
 extern const struct cart_partdb_entry idecart_part;
+extern const struct cart_partdb_entry cocosdc_part;
 extern const struct cart_partdb_entry ikon_part;
 extern const struct cart_partdb_entry mooh_part;
 extern const struct cart_partdb_entry mpi_part;
@@ -120,6 +121,7 @@ const struct partdb_entry *partdb[] = {
 	(const struct partdb_entry *)&orch90_part,
 	(const struct partdb_entry *)&rsdos_part,
 	(const struct partdb_entry *)&idecart_part,
+	(const struct partdb_entry *)&cocosdc_part,
 #ifndef HAVE_WASM
 #ifdef WANT_EXPERIMENTAL
 	(const struct partdb_entry *)&ikon_part,

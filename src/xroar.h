@@ -129,6 +129,11 @@ struct xroar_cfg {
 		bool auto_sd;
 	} disk;
 
+	// CoCoSDC: host directory treated as the SD card root (Phase D)
+	struct {
+		char *root;
+	} sdc;
+
 	// XXX this might make more sense as a per-machine option
 	bool force_crc_match;
 
