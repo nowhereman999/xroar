@@ -105,22 +105,33 @@ You should see `cocosdc`.
 Rebuild `src/xroar` after updating the source. Restart an already running
 XRoar process to use the new binary.
 
-From the repo root (not `src/`):
+Mac Terminal, from the repo root (not `src/`):
 
 ```text
-./configure --without-gtk2 --without-gtk3 --with-sdl2 && make
+git fetch origin
+git checkout cursor/sdl3-cocoa-menubar-78f7
+./autogen.sh
+./configure --without-gtk2 --without-gtk3 && make -C src
 ```
 
-`make` from the root still tries `doc/xroar.info` if `makeinfo` is missing;
-`src/xroar` is already linked.  On Mac, `--with-sdl2` is Cocoa/`macosx` (the
-working 1.12.1-style video path).  Optional: `make -C src` skips the info
-manual.  Host tests (no ROM): `./tools/run-cocosdc-tests.sh`.
+SDL3 stays the video backend.  Do **not** pass `--without-sdl3` or
+`--with-sdl2` to get the menu bar.  With Homebrew `sdl3` installed, that
+configure defines `HAVE_SDL3`, `HAVE_COCOA`, and `WANT_UI_SDL`.  `-ui help`
+lists `macosx` first (the default, and what Studio launches) and `sdl`.
+Both install the Cocoa menu bar and both draw with SDL3 (`vo_sdl3`,
+OpenGL unless `SDL_RENDER_DRIVER` is set).
 
-Mac menu bar (`-ui macosx`): **Tool → Keyboard → Natural** (translated
-host symbols, ⌘Z) or **Emulated** (raw CoCo/Dragon keys); **Tool → Speed
-→ 100%** (realtime) or **Maximum** (unthrottled / `-no-ratelimit`). These
-are the existing `ui_tag_kbd_translate` and `ui_tag_ratelimit_latch`
-knobs, not new backends.
+`make` from the root still tries `doc/xroar.info` if `makeinfo` is missing;
+`src/xroar` is already linked.  Optional: `make -C src` skips the info
+manual.  `--with-sdl2` is only the older SDL2 Cocoa path.  Host tests
+(no ROM): `./tools/run-cocosdc-tests.sh`.
+
+Mac menu bar (`-ui macosx` or `-ui sdl`): **Tool → Keyboard → Natural**
+(translated host symbols, ⌘Z) or **Emulated** (raw CoCo/Dragon keys);
+**Tool → Speed → 100%** (realtime) or **Maximum** (unthrottled /
+`-no-ratelimit`).  **View → TV input** is still RGB / composite.  These
+are the existing `ui_tag_kbd_translate`, `ui_tag_ratelimit_latch`, and
+`ui_tag_tv_input` knobs, not new backends.
 
 SDC-DOS smoke (Glen’s Studio argv shape: DECB `.DSK` + `STARTUP.CFG` `0=….DSK`,
 **not** a loose FAT `START.BAS`):
@@ -375,7 +386,11 @@ upstream XRoar.
 **A pure white/blank window is GTK+ 3 on Mac.**  GTK is untested on macOS
 (upstream README).  Do not use `-ui gtk3`.  There is **no** `-ui sdl2`
 module: that name prints `UI module sdl2 not found: trying gtk3` and
-stays white.  Working video is the **SDL3 UI**, module name `sdl`.
+stays white.  Working video is **SDL3**.  The default module is `macosx`
+(Cocoa menu bar on that SDL3 window).  `-ui sdl` is the same menu bar
+and the same SDL3 video; its `-ui help` line is “SDL3 UI with Mac menu
+bar”.  Studio can keep launching `-ui macosx`.  `--without-sdl3` is not
+required for menus.
 
 **`CRC32 INVALID` is not a bad `coco3.rom` when the file is 32768 bytes
 and `zlib.crc32` is `0xb4c88d6c`.**  That value is the documented NTSC
@@ -434,16 +449,18 @@ grep -E 'HAVE_SDL3|WANT_UI_SDL|HAVE_GTK3' config.h
 src/xroar -ui help
 ```
 
-Expect `#define HAVE_SDL3 1`, `#define WANT_UI_SDL 1`, no `HAVE_GTK3`,
-and `-ui help`:
+Expect `#define HAVE_SDL3 1`, `#define HAVE_COCOA 1`, `#define WANT_UI_SDL 1`,
+no `HAVE_GTK3`, and `-ui help`:
 
 ```text
-	sdl        SDL3 UI
+	macosx     Mac OS X Cocoa menus (SDL3)
+	sdl        SDL3 UI with Mac menu bar
 	null       No UI
 ```
 
-Never pass `-ui sdl2`.  Use `-ui sdl` (the default on Mac after this
-fork skips GTK, but still the name to use).
+Never pass `-ui sdl2`.  A bare launch uses `macosx` (menus).  `-ui sdl`
+is the same menus if something still passes that name.  Studio’s
+`-ui macosx` does not need `--without-sdl3`.
 
 ```text
 mkdir -p ~/sdc-root
@@ -451,11 +468,14 @@ printf 'hello from sdc\n' > ~/sdc-root/HELLO.TXT
 src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -ui sdl -v 2
 ```
 
-At `-v 2` the UI module line is:
+At `-v 2` the UI module line for that command is:
 
 ```text
-[module:sdl/ui] SDL3 UI
+[module:sdl/ui] SDL3 UI with Mac menu bar
 ```
+
+The menu bar is the Cocoa one (File / View / Hardware / Tool).  Omit
+`-ui sdl` and the same bar comes up as `[module:macosx/ui] Mac OS X Cocoa menus (SDL3)`.
 
 If you see `[module:gtk3/ui] GTK+ 3 UI` instead, the window will be
 white — rebuild with `--without-gtk3` or pass `-ui sdl` on an SDL3
@@ -465,11 +485,11 @@ build that still listed `sdl` in `-ui help`.
 
 | Window | Log | Cause | Fix |
 | --- | --- | --- | --- |
-| **White** / blank | `[module:gtk3/ui] GTK+ 3 UI` (or `UI module sdl2 not found: trying gtk3`) | GTK+ 3 UI on Mac | Use the **SDL3 UI**: `-ui sdl` after an SDL3 `--without-gtk3` build. **Never `-ui sdl2`.** |
+| **White** / blank | `[module:gtk3/ui] GTK+ 3 UI` (or `UI module sdl2 not found: trying gtk3`) | GTK+ 3 UI on Mac | Use **SDL3**: default `-ui macosx`, or `-ui sdl`. **Never `-ui sdl2`.** |
 | **Black**, SDL3 UI is up, ROM loaded, tape plays | `CRC32 INVALID` (even for `0xb4c88d6c`) | SDL3 Metal vo (blend/scale-on-NULL), **not** a bad NTSC dump. INVALID is a list/conf diagnostic. | Rebuild this tip.  A/B with brew `xroar` (Cocoa) and `SDL_RENDER_DRIVER=opengl`.  `-ram 2048` is not the cause. |
 | **CoCo 2 VDG garbage** on SDL3 | `Colour BASIC` / `Extended Colour BASIC CRC32 INVALID` | Same SDL3 vo (wrong colours / alpha) plus possible list wipe; CoCo 2 ROMs are separate from `coco3.rom`. | Same A/B.  Need headerless `bas13.rom` + `extbas11.rom` for a real prompt. |
 
-Once `[module:sdl/ui] SDL3 UI` is in the log, a black screen is **not GTK3**.
+Once `[module:sdl/ui] SDL3 UI with Mac menu bar` (or `[module:macosx/ui]`) is in the log, a black screen is **not GTK3**.
 Accepted Super ECB CRCs (`-crclist-print`, list `coco3`):
 
 | Dump | Filename | Size | CRC32 |
@@ -633,17 +653,20 @@ Host-side tests (same as CI; no emulator):
 ### Configure flags for `WANT_UI_SDL` / `sdl` without GTK3
 
 `WANT_UI_SDL` is **not** the same as `HAVE_SDL2`.  `HAVE_SDL2 1` with
-`WANT_UI_SDL` undefined is expected on Mac when Cocoa is found: the
-basic `sdl` UI is turned off in favour of `-ui macosx`.
+`WANT_UI_SDL` undefined is expected on Mac when Cocoa is found **and
+SDL3 is not**: the basic `sdl` UI is turned off in favour of `-ui macosx`.
+An SDL3+Cocoa build defines all three of `HAVE_SDL3`, `HAVE_COCOA`, and
+`WANT_UI_SDL`.  Both UI names show the menu bar.  You do not pass
+`--without-sdl3` for that.
 
 | Flag | Effect |
 | --- | --- |
 | `--without-gtk3` | Do not probe GTK+ 3 (no white window).  **Default on Darwin** in this fork. |
-| *(SDL3 found)* | Sets `HAVE_SDL3` and `WANT_UI_SDL` automatically.  UI name is `sdl` (“SDL3 UI”). |
-| `--enable-ui-sdl` | Force the basic `sdl` UI even if Cocoa would disable it.  **Not needed for SDL3.**  Needed for SDL2 if you want `-ui sdl` as well as/instead of Cocoa. |
-| `--without-cocoa` | Do not build `-ui macosx` (SDL2 Mac menus). |
-| `--with-sdl2` | Prefer SDL2 over SDL3.  Does **not** create `-ui sdl2`.  On Mac this usually builds Cocoa and leaves `WANT_UI_SDL` undefined. |
-| `--without-sdl3` | Skip SDL3 so an SDL2/Cocoa build can proceed if both are installed. |
+| *(SDL3 + Cocoa found)* | `HAVE_SDL3`, `HAVE_COCOA`, `WANT_UI_SDL`.  Default UI `macosx` (Cocoa menus, SDL3 video).  `-ui sdl` is the same menus. |
+| `--enable-ui-sdl` | Force the basic `sdl` UI on an **SDL2** Cocoa build (that UI is menuless).  **Not needed for SDL3.** |
+| `--without-cocoa` | Do not build the menu bar.  SDL3 then has only menuless `-ui sdl`. |
+| `--with-sdl2` | Prefer SDL2 over SDL3.  Does **not** create `-ui sdl2`.  On Mac this builds Cocoa and leaves `WANT_UI_SDL` undefined. |
+| `--without-sdl3` | Skip SDL3 so an SDL2/Cocoa build can proceed if both are installed.  **Not needed for menus.** |
 
 `./configure --help` lists the rest.  This fork does not add a CMake path.
 
@@ -669,7 +692,7 @@ are available later:
 1. `mkdir -p ~/sdc-root` and put a small file there, e.g. `HELLO.TXT`.
 2. Rebuild with `make -C src` (Texinfo / `makeinfo` not required).
 3. Run `src/xroar -machine coco3 -cart cocosdc -sdc-root ~/sdc-root -ui sdl -v 2`.
-4. Confirm `[module:sdl/ui] SDL3 UI` (white window = GTK3 — not this command),
+4. Confirm `[module:sdl/ui] SDL3 UI with Mac menu bar` (white window = GTK3 — not this command),
    `[sdl/vo] renderer …`, Slot 0 `CRC32 0xb4c88d6c` and `CRC32 valid`
    (use `-no-c` if INVALID with that CRC), `[part:cocosdc]`, and
    `SD card root:` in the log.  Black CoCo 3 with SDL3 after that is the

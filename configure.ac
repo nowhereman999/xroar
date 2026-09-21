@@ -116,13 +116,18 @@ AC_ARG_ENABLE([ui_sdl],
 
 AC_ARG_WITH([cocoa],
 	AS_HELP_STRING([--without-cocoa], [don't test for Mac OS X Cocoa]) )
-test "x$with_sdl2" = "xno" && with_cocoa=no
+# Cocoa menus need an SDL video backend.  SDL3 is enough — do not require
+# SDL2, or a normal Darwin build with SDL3 installed would drop the menu bar.
+if test "x$with_sdl3" = "xno" && test "x$with_sdl2" = "xno"; then
+	with_cocoa=no
+fi
 
 ### macOS defaults
 #
 # GTK+ 3 is untested on Mac OS X+ (upstream README) and typically opens a
 # pure white/blank window.  Skip it unless the user asked (--with-gtk3).
-# Video then comes from SDL3's `-ui sdl`, or SDL2+Cocoa (`-ui macosx`).
+# Video is SDL3 (`-ui sdl` and `-ui macosx`, both with the Cocoa menu bar
+# when Cocoa is found) or, without SDL3, SDL2+Cocoa (`-ui macosx`).
 # There is no UI module named `sdl2`.
 xroar_cv_darwin=no
 case "$host_os" in
@@ -757,16 +762,23 @@ AM_COND_IF([SDL2_IMAGE], [AC_DEFINE([HAVE_SDL2_IMAGE], 1, [Have SDL2_image])])
 AC_SUBST(SDL2_IMAGE_LIBS)
 
 ### Mac OS X Cocoa
+#
+# Probe whenever SDL3 or SDL2 is usable.  SDL3 used to skip this (Cocoa was
+# gated on SDL2 only), so `./configure && make` on Darwin produced a menuless
+# `-ui sdl`.
 
 unset have_cocoa
 if test "x$ac_cv_objc_compiler_gnu" = "xyes"; then
-	AM_COND_IF([UI_SDL2], [AS_IF([test "x$with_cocoa" != "xno"], [
+	xroar_try_cocoa=no
+	AM_COND_IF([UI_SDL3], [xroar_try_cocoa=yes])
+	AM_COND_IF([UI_SDL2], [xroar_try_cocoa=yes])
+	AS_IF([test "x$xroar_try_cocoa" = "xyes" && test "x$with_cocoa" != "xno"], [
 		    COCOA_LIBS="-framework Cocoa -framework Carbon"
 		    AC_LANG_PUSH([Objective C])
 		    AC_CHECK_HEADER([Cocoa/Cocoa.h], [
 				     have_cocoa=1
 				     ], :)
-		    AC_LANG_POP([Objective C]) ]) ])
+		    AC_LANG_POP([Objective C]) ])
 fi
 AC_SUBST(COCOA_CFLAGS)
 AC_SUBST(COCOA_LIBS)
@@ -778,7 +790,14 @@ AC_SUBST(COCOA_LIBS)
 
 AM_CONDITIONAL([UI_COCOA], [test -n "$have_cocoa"])
 AM_COND_IF([UI_COCOA], [
-		test "x$enable_ui_sdl" != "xyes" && enable_ui_sdl=no
+		# SDL2+Cocoa is the only GUI, so the menuless basic SDL UI
+		# stays off unless --enable-ui-sdl.  SDL3+Cocoa keeps `-ui sdl`
+		# and gives it the same NSMenu bar as `-ui macosx`.
+		AM_COND_IF([UI_SDL3], [
+				:
+			], [
+				test "x$enable_ui_sdl" != "xyes" && enable_ui_sdl=no
+			])
 		AC_DEFINE([HAVE_COCOA], 1, [Have Mac OS X Cocoa framework])
 	], [
 		OBJC="$CC"
@@ -864,10 +883,12 @@ AM_COND_IF([GDB], [AC_DEFINE([WANT_GDB_TARGET], 1, [GDB target])])
 ### Misc tests & features
 
 # Basic SDL UI (`-ui sdl`, description "SDL3 UI" or "SDL2 UI").
-# SDL3 sets this automatically.  SDL2 on macOS usually finds Cocoa first,
-# which *disables* WANT_UI_SDL unless the user passed --enable-ui-sdl —
-# so config.h can have HAVE_SDL2 without WANT_UI_SDL.  That build's GUI is
-# `-ui macosx`, not `-ui sdl` / `-ui sdl2` (there is no sdl2 module).
+# SDL3 sets this automatically, including when Cocoa is also built: `-ui sdl`
+# and `-ui macosx` then share the Cocoa menu bar and SDL3 video.
+# SDL2 on macOS usually finds Cocoa first, which *disables* WANT_UI_SDL
+# unless the user passed --enable-ui-sdl — so config.h can have HAVE_SDL2
+# without WANT_UI_SDL.  That build's GUI is `-ui macosx`, not `-ui sdl` /
+# `-ui sdl2` (there is no sdl2 module).
 AM_COND_IF([UI_SDL2], [ test "x$enable_ui_sdl" != "xno" && enable_ui_sdl=yes ])
 AM_COND_IF([UI_SDL3], [ test "x$enable_ui_sdl" != "xno" && enable_ui_sdl=yes ])
 AM_CONDITIONAL([WANT_UI_SDL], [test "x$enable_ui_sdl" = "xyes"])

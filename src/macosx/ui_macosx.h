@@ -21,13 +21,27 @@
 
 #include <stdint.h>
 
+/* Embedded SDL interface matches the video backend this build selected.
+ * top-config.h (via the .m) defines HAVE_SDL3 or HAVE_SDL2.  SDL3 and SDL2
+ * are mutually exclusive in configure. */
+
+#ifdef HAVE_SDL3
+#include "sdl3/common.h"
+#else
+#include "sdl2/common.h"
+#endif
+
 #define UIMAC_TAG(t) (((t) & 0x7f) << 8)
 #define UIMAC_TAGV(t,v) (UIMAC_TAG(t) | ((v) & 0xff))
 #define UIMAC_TAG_TYPE(t) (((t) >> 8) & 0x7f)
 #define UIMAC_TAG_VALUE(t) ((int8_t)((t) & 0xff))
 
 struct ui_macosx_interface {
-	struct ui_sdl2_interface ui_sdl2_interface;
+#ifdef HAVE_SDL3
+	struct ui_sdl3_interface ui_sdl_interface;
+#else
+	struct ui_sdl2_interface ui_sdl_interface;
+#endif
 
 	// Top level messenger client id
 	int msgr_client_id;
