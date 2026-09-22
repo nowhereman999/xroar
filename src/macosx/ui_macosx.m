@@ -459,7 +459,7 @@ int cocoa_super_all_keys = 0;
 		[item setState:((value == uimac->vo.picture) ? NSOnState : NSOffState)];
 		break;
 	case ui_tag_ntsc_scaling:
-		[item setState:((value == uimac->vo.ntsc_scaling) ? NSOnState : NSOffState)];
+		[item setState:(uimac->vo.ntsc_scaling ? NSOnState : NSOffState)];
 		break;
 	case ui_tag_tv_input:
 		[item setState:((value == uimac->vo.tv_input) ? NSOnState : NSOffState)];

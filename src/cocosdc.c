@@ -67,6 +67,7 @@ struct cocosdc {
 	uint8_t flash_data;
 	uint8_t flash_bank;
 	struct becker *becker;
+	bool becker_selected;
 };
 
 #define COCOSDC_SER_HW_BLOCK (10)
@@ -177,6 +178,7 @@ static struct part *cocosdc_allocate(void) {
 	c->attach = cocosdc_attach;
 	c->detach = cocosdc_detach;
 
+	sdc->becker_selected = false;
 	sdc_hw_reset(&sdc->hw);
 	sdc_fdc_reset(&sdc->fdc);
 	sdc_fs_init(&sdc->fs);
@@ -221,7 +223,7 @@ static bool cocosdc_finish(struct part *p) {
 		if (sdc->becker) {
 			LOG_MOD_DEBUG(1, "cocosdc",
 				      "Becker port open ($FF41 status, $FF42 data; "
-				      "flash data at $FF42 yields to Becker)\n");
+				      "read status to select Becker at $FF42)\n");
 		}
 #ifndef WANT_BECKER
 		else {
@@ -561,6 +563,7 @@ static void cocosdc_flash_write(struct cocosdc *sdc, int reg, uint8_t D) {
 static void cocosdc_reset(struct cart *c, bool hard) {
 	struct cocosdc *sdc = (struct cocosdc *)c;
 	cart_rom_reset(c, hard);
+	sdc->becker_selected = false;
 	sdc_hw_reset(&sdc->hw);
 	sdc_fdc_reset(&sdc->fdc);
 	if (hard) {
@@ -609,8 +612,18 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 	/* Becker before flash so $FF42 talks to FujiNet when -cart-becker
 	 * connected.  SDC registers are classified separately and fall
 	 * through below. */
+	/* $FF42 is shared with the SDC flash probe.  A Becker status read
+	 * selects the network data register; a flash-bank access selects
+	 * flash again.  The unambiguous $FF46 alias is always Becker. */
+	if (A == 0xff43) {
+		sdc->becker_selected = false;
+	}
 	cls = cocosdc_p2_class(A, sdc->becker != NULL);
+	if (A == 0xff42 && !sdc->becker_selected) {
+		cls = COCOSDC_P2_FLASH;
+	}
 	if (cls == COCOSDC_P2_BECKER_STATUS) {
+		sdc->becker_selected = true;
 		return becker_read_status(sdc->becker);
 	}
 	if (cls == COCOSDC_P2_BECKER_DATA) {
@@ -650,7 +663,16 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 		return D;
 	}
 
+	/* $FF42 is shared with the SDC flash probe.  A Becker status read
+	 * selects the network data register; a flash-bank access selects
+	 * flash again.  The unambiguous $FF46 alias is always Becker. */
+	if (A == 0xff43) {
+		sdc->becker_selected = false;
+	}
 	cls = cocosdc_p2_class(A, sdc->becker != NULL);
+	if (A == 0xff42 && !sdc->becker_selected) {
+		cls = COCOSDC_P2_FLASH;
+	}
 	if (cls == COCOSDC_P2_BECKER_DATA) {
 		becker_write_data(sdc->becker, D);
 		return D;
