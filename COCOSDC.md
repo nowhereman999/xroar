@@ -894,3 +894,20 @@ are available later:
 
 Studio **Run** stages `LAUNCH.DSK` and `STARTUP.CFG` under its build
 folder and launches this cartridge. A Zippster `.CSM` menu is not on this branch.
+
+## CoCoSDC + Becker flash-probe routing (2026-09-22)
+
+SDC-DOS writes `00 64 00` to `$FF42` during its flash probe. Sending these
+bytes to FujiNet-PC corrupts its DriveWire command stream (`64` starts a
+multi-byte serial write) and causes `FN_INIT` timeout 1. This occurs before
+application startup and is independent of CPU speed or JSON parsing.
+
+After reset, `$FF42` is flash data. Reading Becker status at `$FF41` or
+`$FF45` selects Becker data at `$FF42`; accessing flash-bank `$FF43` selects
+flash again. `$FF46` remains an unambiguous Becker data alias. Clients using
+`$FF42` must read status first (the compiler's transport drain does this).
+SDC/FDC registers are unchanged. This supersedes the unconditional
+“Becker wins” description above.
+
+The Mac 60Hz scaling menu checkmark was also corrected: it now reflects the
+actual boolean rather than comparing it with the menu tag's zero value.
