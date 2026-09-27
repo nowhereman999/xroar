@@ -275,8 +275,11 @@ void vo_set_draw_area(struct vo_interface *, int x, int y, int w, int h);
 // count scanlines.
 
 inline void vo_vsync(struct vo_interface *vo, bool draw) {
-	if (draw)
+	if (draw) {
+		if (vo->renderer && vo->renderer->finish_frame)
+			vo->renderer->finish_frame(vo->renderer);
 		DELEGATE_SAFE_CALL(vo->draw);
+	}
 	vo_render_vsync(vo->renderer);
 }
 

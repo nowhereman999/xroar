@@ -79,6 +79,7 @@ static void TNAME(render_cmp_2bit)(void *sptr, unsigned burstn,
 				   unsigned npixels, uint8_t const *data);
 static void TNAME(render_cmp_5bit)(void *sptr, unsigned burstn,
 				   unsigned npixels, uint8_t const *data);
+static void TNAME(finish_frame)(struct vo_render *vr);
 static void TNAME(next_line)(struct vo_render *vr, unsigned npixels);
 static void TNAME(line_to_rgb)(struct vo_render *vr, int lno, uint8_t *dest);
 
@@ -97,6 +98,7 @@ struct vo_render *TNAME(renderer_new)(TNAME(map_rgb_func) map_rgb, TNAME(unmap_r
 	vr->render_rgb_palette = TNAME(render_rgb_palette);
 	vr->render_cmp_2bit = TNAME(render_cmp_2bit);
 	vr->render_cmp_5bit = TNAME(render_cmp_5bit);
+	vr->finish_frame = TNAME(finish_frame);
 	vr->next_line = TNAME(next_line);
 	vr->line_to_rgb = TNAME(line_to_rgb);
 
@@ -318,6 +320,23 @@ static void TNAME(render_cmp_5bit)(void *sptr, unsigned burstn, unsigned npixels
 	vr->pixel = (VR_PTYPE *)vr->pixel + vr->buffer_pitch;
 	vr->t = (vr->t + npixels) % vr->tmax;
 	vr->scanline++;
+}
+
+// A viewport can extend below the last scanline of a field (notably NTSC
+// action/underscan). Those rows otherwise retain a previous field's pixels.
+// Use the pixel-format mapper so black remains opaque in alpha formats.
+static void TNAME(finish_frame)(struct vo_render *vr) {
+	if (!vr->buffer || !vr->pixel || vr->buffer_pitch <= 0)
+		return;
+	struct TNAME(vo_render) *vrt = (struct TNAME(vo_render) *)vr;
+	VR_PTYPE *dest = vr->pixel;
+	VR_PTYPE *end = (VR_PTYPE *)vr->buffer + vr->buffer_pitch * vr->viewport.h;
+	VR_PTYPE black = vrt->map_rgb(0, 0, 0);
+	while (dest < end) {
+		for (int x = 0; x < vr->viewport.w; x++)
+			dest[x] = black;
+		dest += vr->buffer_pitch;
+	}
 }
 
 // Advance pixel pointer to next line in buffer; update current time 't'
