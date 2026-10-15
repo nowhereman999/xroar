@@ -63,10 +63,13 @@ static void pc_ui_state_notify(void *sptr, int tag, void *smsg);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static void gtk2_pc_dialog_free(void *sptr);
+
 // Create dialog window
 
 struct uigtk2_dialog *gtk2_pc_dialog_new(struct ui_gtk2_interface *uigtk2) {
 	struct uigtk2_dialog *dlg = uigtk2_dialog_new(uigtk2, "/uk/org/6809/xroar/gtk2/printercontrol.ui", "pc_window", ui_tag_print_dialog);
+	dlg->free = DELEGATE_AS0(void, gtk2_pc_dialog_free, dlg);
 
 	// Join each UI group we're interested in
 	ui_messenger_join_group(dlg->msgr_client_id, ui_tag_print_destination, MESSENGER_NOTIFY_DELEGATE(pc_ui_state_notify, uigtk2));
@@ -97,6 +100,14 @@ struct uigtk2_dialog *gtk2_pc_dialog_new(struct ui_gtk2_interface *uigtk2) {
 #endif
 
 	return dlg;
+}
+
+// Free dialog window
+
+static void gtk2_pc_dialog_free(void *sptr) {
+	struct uigtk2_dialog *dlg = sptr;
+	struct ui_gtk2_interface *uigtk2 = dlg->uigtk2;
+	free(uigtk2->printer.pipe);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
