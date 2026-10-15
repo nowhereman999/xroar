@@ -152,6 +152,8 @@ void joystick_shutdown(void) {
 	}
 	messenger_client_unregister(msgr_client_id);
 	slist_free_full(config_list, (slist_free_func)joystick_config_free_void);
+	free(joystick_port_config_name[0]);
+	free(joystick_port_config_name[1]);
 	config_list = NULL;
 	js_db_free();
 }
