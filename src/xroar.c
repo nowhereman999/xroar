@@ -1431,6 +1431,7 @@ void xroar_shutdown(void) {
 		part_free((struct part *)xroar.machine);
 		xroar.machine = NULL;
 	}
+	free(private_cfg.default_machine);
 	joystick_shutdown();
 	cart_config_remove_all();
 	machine_config_remove_all();
