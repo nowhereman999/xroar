@@ -215,6 +215,25 @@ tcc1014/font-gime.c:
 EXTRA_DIST += \
 	mc6847/font-6847.png mc6847/font-6847t1.png tcc1014/font-gime.png
 
+# A built-in ROM image to allow BOOTing a Dragon from an IDE drive
+
+xroar_SOURCES += bsdos/bsdos.c
+
+bsdos/bsdos.rom: bsdos/idelba.s
+
+bsdos/bsdos.rom: bsdos/bsdos.s
+	asm6809 -v -l bsdos/bsdos.lis -B -d NOALIGN -o $@ $<
+
+CLEANFILES += bsdos/bsdos.lis
+
+bsdos/bsdos.c: bsdos/bsdos.rom
+	xxd -i $< $@
+
+BUILT_SOURCES += bsdos/bsdos.c
+
+EXTRA_DIST += \
+	bsdos/bsdos.s bsdos/bsdos.rom bsdos/bsdos.c
+
 # ROM paths
 
 if WASM

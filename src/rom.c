@@ -172,6 +172,7 @@ static const struct rom_meta_internal rom_internal[] = {
 	{ DESC(0xdffc86c4, 0x2000, "YA-DOS 0.5B Picard"), P_IDE },
 	{ DESC(0x53e22a43, 0x2000, "YA-DOS 0.5D Picard"), P_IDE },
 	{ DESC(0x0baadcc4, 0x2000, "YA-DOS 0.5E Picard"), P_IDE },
+	{ DESC(0x9f37097c, 0x2000, "BSDOS 0.1 (Ciaran Anscomb)"), P_IDE },
 
 	// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
