@@ -526,32 +526,29 @@ static void hd6309_run(struct MC6809 *cpu) {
 				case 0xf: tmp1 = op_clr(cpu, tmp1); break; // CLR, CLRA, CLRB
 				default: break;
 				}
-				switch (op & 0xf) {
-				case 0xd: // TST
+				switch ((op >> 4) & 0xf) {
+				default:
+				case 0x0: case 0x6: case 0x7:
+					REG_M = tmp1;  // [hoglet67]
 					NVMA_CYCLE;
-					if (!NATIVE_MODE)
-						NVMA_CYCLE;
-					// XXX does the result end up in M for TST?
-					break;
-				default: // the rest need storing
-					switch ((op >> 4) & 0xf) {
-					default:
-					case 0x0: case 0x6: case 0x7:
-						NVMA_CYCLE;
-						REG_M = tmp1;  // [hoglet67]
+					if ((op & 0xf) == 0xd) {
+						// TST
+						if (!NATIVE_MODE)
+							NVMA_CYCLE;
+					} else {
 						store_byte(cpu, ea, tmp1);
-						break;
-					case 0x4:
-						REG_A = tmp1;
-						if (!NATIVE_MODE)
-							peek_byte(cpu, REG_PC);
-						break;
-					case 0x5:
-						REG_B = tmp1;
-						if (!NATIVE_MODE)
-							peek_byte(cpu, REG_PC);
-						break;
 					}
+					break;
+				case 0x4:
+					REG_A = tmp1;
+					if (!NATIVE_MODE)
+						peek_byte(cpu, REG_PC);
+					break;
+				case 0x5:
+					REG_B = tmp1;
+					if (!NATIVE_MODE)
+						peek_byte(cpu, REG_PC);
+					break;
 				}
 			} break;
 
