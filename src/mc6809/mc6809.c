@@ -755,41 +755,25 @@ static void mc6809_run(struct MC6809 *cpu) {
 					REG_PC += tmp;
 			} break;
 
-			// 0x30 LEAX indexed
-			// 0x1030 LEAX indexed, illegal
-			case 0x30:
-			case 0x0230:
-				REG_X = ea_indexed(cpu);
-				CLR_Z;
-				SET_Z16(REG_X);
-				NVMA_CYCLE;
-				break;
-
-			// 0x31 LEAY indexed
-			// 0x1031 LEAY indexed, illegal
-			case 0x31:
-			case 0x0231:
-				REG_Y = ea_indexed(cpu);
-				CLR_Z;
-				SET_Z16(REG_Y);
-				NVMA_CYCLE;
-				break;
-
-			// 0x32 LEAS indexed
-			// 0x1032 LEAS indexed, illegal
-			case 0x32:
-			case 0x0232:
-				REG_S = ea_indexed(cpu);
-				NVMA_CYCLE;
-				cpu->nmi_armed = 1;
-				break;
-
-			// 0x33 LEAU indexed
-			// 0x1033 LEAU indexed, illegal
-			case 0x33:
-			case 0x0233:
-				REG_U = ea_indexed(cpu);
-				NVMA_CYCLE;
+			// 0x30 LEAX, LEAY, LEAS, LEAU indexed
+			// 0x1030 LEAX, LEAY, LEAS, LEAU indexed, illegal
+			case 0x30: case 0x31: case 0x32: case 0x33:
+			case 0x2030: case 0x2031: case 0x2032: case 0x2033:
+				{
+					unsigned ea = ea_indexed(cpu);
+					if (!(op & 2)) {
+						CLR_Z;
+						SET_Z16(ea);
+					}
+					switch (op & 3) {
+					default:
+					case 0: REG_X = ea; break;
+					case 1: REG_Y = ea; break;
+					case 2: REG_S = ea; break;
+					case 3: REG_U = ea; cpu->nmi_armed = 1; break;
+					}
+					NVMA_CYCLE;
+				}
 				break;
 
 			// 0x34 PSHS immediate
