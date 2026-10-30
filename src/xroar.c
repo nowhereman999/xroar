@@ -603,6 +603,11 @@ static char const * const default_config[] = {
 	"cart-desc 'IDE Interface'",
 	"cart-type ide",
 	"cart-becker",
+	// IDE Cartridge (Dragon)
+	"cart ide-dragon",
+	"cart-desc 'IDE Interface for Dragon'",
+	"cart-type ide",
+	"cart-rom bsdos",
 #ifndef HAVE_WASM
 #ifdef WANT_EXPERIMENTAL
 	// CoCoSDC cartridge
