@@ -2922,7 +2922,8 @@ static void enable_trap(struct trap_def *trap, bool enable) {
 		}
 		return;
 	}
-	assert(xroar.machine != NULL);
+	if (!xroar.machine)
+		return;
 	char *cond_copy = xstrdup(trap->cond);
 	char *val = cond_copy;
 	char *key = strsep(&val, "=");
