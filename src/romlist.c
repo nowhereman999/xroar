@@ -171,13 +171,9 @@ sds romlist_find(const char *name) {
 	for (iter = romlist->list; iter; iter = iter->next) {
 		char *ent = iter->data;
 		if (ent) {
-			//if (ent[0] == '@') {
-				if ((path = romlist_find(ent))) {
-					break;
-				}
-			//} else if ((path = find_rom(ent))) {
-			//	break;
-			//}
+			if ((path = romlist_find(ent))) {
+				break;
+			}
 		}
 	}
 	romlist->flag = 0;
