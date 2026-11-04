@@ -8,6 +8,7 @@
  * Shutdown cleanly on SIGTERM, SIGINT [Erik Gavriluk]
  * Fix 2- and 5-bit LUT rendering of high-res GIME modes [with Glen Hewlett]
  * iMMUnity fixes [by John Federico]
+ * Fix 6809/6309 memory access pattern for TSTA, TSTB
 
 Version 1.12, Mon 27 Jul 2026
 
