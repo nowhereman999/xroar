@@ -208,6 +208,15 @@ static const struct ser_struct_data coco3_ser_struct_data = {
 	.write_elem = coco3_write_elem,
 };
 
+static struct xconfig_option const coco3_options[] = {
+	{ XCO_SET_BOOL("readable-dat", struct coco3, dat.readable) },
+};
+
+static const struct xconfig_set coco3_option_set = {
+	ARRAY_N_ELEMENTS(coco3_options),
+	coco3_options
+};
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void coco3_config_complete(struct machine_config *mc) {
@@ -394,6 +403,8 @@ static struct part *coco3_allocate(void) {
 
 	m->keyboard.type = dkbd_layout_coco3;
 
+	mcc3->dat.readable = 0;
+
 	return p;
 }
 
@@ -451,6 +462,8 @@ static void coco3_initialise(struct part *p, void *options) {
 
         coco3_config_complete(mc);
         m->config = mc;
+
+	xconfig_parse_list_struct(&coco3_option_set, mc->opts, mcc3);
 
 	// GIME
 	part_add_component(&m->part, part_create((mc->vdg_type == VDG_GIME_1986) ? "TCC1014-1986" : "TCC1014-1987", NULL), "GIME");
@@ -684,8 +697,6 @@ static bool coco3_finish(struct part *p) {
 	// XXX until we serialise sound information
 	update_sound_mux_source(mcc3);
 	sound_set_mux_enabled(mcc3->snd, PIA_VALUE_CB2(mcc3->PIA1));
-
-	mcc3->dat.readable = 1;
 
 	tcc1014_notify_mode(mcc3->GIME);
 
