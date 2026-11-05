@@ -1,6 +1,6 @@
 /* ROM bank support.
  *
- * Copyright 2024 Ciaran Anscomb
+ * Copyright 2024-2026 Ciaran Anscomb
  *
  * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
@@ -36,6 +36,7 @@ struct rombank_slot_file {
 	char *filename;  // absolute path
 	off_t offset;    // into file for this slot
 	uint32_t crc32;
+	bool builtin;    // indicate built-in ROM
 };
 
 struct rombank {

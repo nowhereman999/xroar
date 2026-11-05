@@ -113,7 +113,12 @@ void rombank_report(struct rombank *rb, const char *par, const char *name) {
 		}
 		LOG_PRINT("\tSlot %3u: ", i);
 		if (rb->d[i]) {
-			LOG_PRINT("CRC32 0x%08x FILE %s", rb->slot[i].crc32, basename);
+			LOG_PRINT("CRC32 0x%08x", rb->slot[i].crc32);
+			if (rb->slot[i].builtin) {
+				LOG_PRINT(" BUILTIN %s", basename);
+			} else {
+				LOG_PRINT(" FILE %s", basename);
+			}
 			if (rb->slot[i].offset > 0) {
 				LOG_PRINT(" +0x%06lx", (unsigned long)rb->slot[i].offset);
 			}
@@ -147,21 +152,26 @@ int rombank_load_image(struct rombank *rb, unsigned slot, const char *filename, 
 		return -1;
 	}
 
-	FILE *fd = fopen(filename, "rb");
-	if (!fd) {
+	FILE *fd = NULL;
+	struct rom_builtin *builtin = rom_builtin_by_name(filename);
+	if (!builtin) {
+		fd = fopen(filename, "rb");
+	}
+	if (!fd && !builtin) {
 		LOG_MOD_DEBUG(2, "rom", "%s: %s\n", filename, strerror(errno));
 		return -1;
 	}
 
-	off_t file_size = fs_file_size(fd);
+	off_t file_size = fd ? fs_file_size(fd) : *builtin->size;
 
-	LOG_MOD_DEBUG(2, "rom", "opened: %s (%lld bytes)\n", filename, (long long)file_size);
+	LOG_MOD_DEBUG(2, "rom", "%s: %s (%lld bytes)\n", builtin ? "built-in" : "opened", filename, (long long)file_size);
 
-	if (file_size > 256 && (file_size % 256) != 0) {
+	// Any remainder from size % 256 considered a skippable header
+	if (fd && file_size > 256 && (file_size % 256) != 0) {
 		offset += (file_size % 256);
 	}
 
-	if (file_size < 0 || offset >= file_size || fseeko(fd, offset, SEEK_SET) < 0) {
+	if (file_size < 0 || offset >= file_size || (fd && fseeko(fd, offset, SEEK_SET) < 0)) {
 		fclose(fd);
 		return -1;
 	}
@@ -172,11 +182,20 @@ int rombank_load_image(struct rombank *rb, unsigned slot, const char *filename, 
 		free(rb->slot[slot].filename);
 		rb->slot[slot].filename = filename_dup;
 		rb->slot[slot].offset = offset;
+		rb->slot[slot].builtin = builtin ? 1 : 0;
 		if (!rb->d[slot]) {
 			rb->d[slot] = xmalloc(rb->slot_size);
 		}
 		memset(rb->d[slot], 0xff, rb->slot_size);
-		size_t nread = fread(rb->d[slot], 1, rb->slot_size, fd);
+		off_t nread = 0;
+		if (fd) {
+			nread = fread(rb->d[slot], 1, rb->slot_size, fd);
+		} else {
+			nread = rb->slot_size;
+			if (nread > file_size)
+				nread = file_size;
+			memcpy(rb->d[slot], builtin->data + offset, nread);
+		}
 		if (nread == 0) {
 			break;
 		}
@@ -189,7 +208,8 @@ int rombank_load_image(struct rombank *rb, unsigned slot, const char *filename, 
 		}
 	}
 	recompute_crc32(rb);
-	fclose(fd);
+	if (fd)
+		fclose(fd);
 
 	return 1;
 }
