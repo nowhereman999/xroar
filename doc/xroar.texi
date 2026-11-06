@@ -1032,7 +1032,8 @@ RGB output from the GIME.
 
 If you specify 1024K or 2048K RAM, this enables an optional DAT board function
 that extends the range of the MMU registers by two bits.  For compatibility
-with early 2M board, these two bits are write-only.
+with early 2M boards, these two bits are write-only by default; specify
+@option{-machine-opt readable-dat} to make them readable.
 
 Architecture @samp{coco3}.  Built-in machine profiles: @samp{coco3} (NTSC),
 @samp{coco3p} (PAL).
