@@ -1105,7 +1105,13 @@ Sectors are 512 bytes, and while some software may use all 512, others only
 access 256 bytes per sector, padding the other 256 bytes (or simply doubling
 them up).
 
-Type @samp{ide}.  Built-in cartridge profile @samp{ide}.
+Type @samp{ide}.  Built-in cartridge profiles: @samp{ide}, @samp{ide-dragon}.
+
+The @samp{ide} profile is for CoCos and will default to trying to use YADOS or
+HDBLBA.
+
+The @samp{ide-dragon} profile specifies a simple built-in ROM compatible with
+Dragon BASIC that allows you to BOOT from the IDE disk.  @xref{BSDOS}.
 
 @c
 
@@ -2507,6 +2513,25 @@ Sometimes it may be useful to force CRC matching so that breakpoints apply
 (e.g. you are modifying a ROM image and don't wish to have to add its CRC to
 the match list each time you modify it).  The @option{-force-crc-match} option
 forces the CRCs to be as if an original ROM image were loaded.
+
+@node BSDOS
+@subsection BSDOS
+
+Bootstrap DOS for the Dragon.  Currently the only built-in ROM, for use with an
+IDE cartridge connected to a Dragon.  It is configured in the @samp{ide-dragon}
+cartridge profile, but may be referred to manually as @samp{bsdos}.
+
+When it starts, it will print the names of the primary and secondary IDE
+drives, if found.  @samp{BOOT} will boot off the primary, @samp{BOOT 1} will
+boot off the secondary.
+
+The boot track is expected to start at LSN 1, just after the MBR.  This is the
+same offset in bytes as it would appear in a DragonDOS image.  No other
+DragonDOS functionality is provided, so the boot track must contain all the
+code necessary to continue loading an OS.
+
+BSDOS may be expanded in the future to support other devices, but for now it it
+really only provided as a way to start Fuzix from an IDE drive.
 
 @c = === === === === === === === === === === === === === === === === === ===
 
