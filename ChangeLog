@@ -1,7 +1,7 @@
  * Report iMMUnity registers to GDB
  * Include SAMx8 / iMMUnity in RAM dumps
- * Represent CPU CC registers to GDB as flags, not structs
- * New option -gdb-flags-as-struct
+ * Default to representing CPU CC registers to GDB as flags, not structs
+ * New option -gdb-flags-as-struct to return to old behaviour
  * RAM dumps now include SAMx8/iMMUnity connected RAM [Pere Serrat]
  * 6309 timing fixes [by Erik Gavriluk]
  * FDC floppy disk sector reporting to UI [with Mauricio Matte]
@@ -9,6 +9,11 @@
  * Fix 2- and 5-bit LUT rendering of high-res GIME modes [with Glen Hewlett]
  * iMMUnity fixes [by John Federico]
  * Fix 6809/6309 memory access pattern for TSTA, TSTB
+ * New option "-machine-opt readable-dat" for CoCo3
+ * New ide-dragon cart profile includes built-in BSDOS ROM to BOOT only
+ * Clear to end of viewport before display; old data could be visible after
+   60Hz->50Hz switch [by Glen Hewlett]
+ * New options -trap-ratelimit, -trap-no-ratelimit
 
 Version 1.12, Mon 27 Jul 2026
 
