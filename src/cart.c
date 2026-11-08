@@ -626,12 +626,20 @@ bool cart_rom_finish(struct part *p) {
 		if (cc->rom && !cc->rom2) {
 			sds tmp = romlist_find(cc->rom);
 			if (tmp) {
-				FILE *fd = fopen(tmp, "rb");
-				if (fd) {
-					off_t fsize = fs_file_size(fd);
+				off_t fsize = 0;
+				struct rom_builtin *builtin = rom_builtin_by_name(tmp);
+				if (builtin) {
+					fsize = *builtin->size;
+				} else {
+					FILE *fd = fopen(tmp, "rb");
+					if (fd) {
+						fsize = fs_file_size(fd);
+						fclose(fd);
+					}
+				}
+				if (fsize) {
 					slot_size = fsize > 0x40000 ? 0x40000 : fsize;
 					nslots = 1;
-					fclose(fd);
 				}
 				sdsfree(tmp);
 			}
