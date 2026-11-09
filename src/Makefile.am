@@ -62,6 +62,7 @@ xroar_SOURCES = \
 	tape.c tape.h \
 	tape_cas.c \
 	tape_sndfile.c \
+	trap.c trap.h \
 	ui.c ui.h \
 	vdg_pal.c vdg_pal.h \
 	vdg_palette.c vdg_palette.h \

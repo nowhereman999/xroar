@@ -1,6 +1,6 @@
 /* XRoar initialisation and top-level emulator functions.
  *
- * Copyright 2003-2025 Ciaran Anscomb
+ * Copyright 2003-2026 Ciaran Anscomb
  *
  * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "trap.h"
 #include "ui.h"
 #include "xconfig.h"
 
@@ -135,6 +136,9 @@ struct xroar_cfg {
 		char *gdb_port;
 		bool gdb_pseudo_regs;
 		bool gdb_flags_as_struct;
+#ifdef WANT_TRAPS
+		struct trap_def trap_def;
+#endif
 	} debug;
 };
 
@@ -202,6 +206,8 @@ void xroar_load_file_by_type(const char *filename, int autorun);
 void xroar_load_disk(const char *filename, int drive, bool autorun);
 
 // Helper functions
+struct xroar_timeout *xroar_set_timeout(char const *timestring);
+void xroar_cancel_timeout(struct xroar_timeout *timeout);
 void xroar_set_trace(int mode, unsigned n);
 void xroar_new_disk(int drive);
 void xroar_insert_disk_file(int drive, const char *filename);
