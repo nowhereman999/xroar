@@ -80,7 +80,7 @@ MC-10; and some other similar machines or clones.  It runs on a wide variety of
 platforms.  Emulated hardware includes:
 
 @itemize @bullet
-@item Dragon 32, 64, and 200-E; Tandy CoCo 1, 2, & 3; Tandy MC-10; Matra & Hachette Alice 4K.
+@item Dragon 32, 64, and 200-E; Tandy CoCo 1, 2, & 3; Tandy MC-10; Matra & Hachette @w{Alice 4K}.
 @item Dragon Professional and Tandy Deluxe Colour Computer prototypes, both including the AY-3-891x sound chip.
 @item DragonDOS, Delta and RS-DOS floppy disk controller cartridges.
 @item Orchestra 90-CC stereo sound cartridge.
@@ -111,17 +111,19 @@ may provide a convenient way for users to run your Dragon software.  See
 @node Recent changes
 @section Recent changes
 
-Changes in version 1.12 include:
+Changes in version 1.13 include:
 
 @itemize
 
-@item Monochrome display support, contributed by Erik Gavriluk.  Select from the
-TV Controls dialog, or with the @option{-vo-monochrome} option.
-@item XRoar will report CPU architecture and a list of registers to GDB as a
-@emph{Target Description}.  With the @option{-gdb-pseudo-regs} option, it will
-include extra state for the PIAs, SAM, SAMx8 or GIME for inspection or
-manipulation by GDB.  The 6803 CPU in the MC-10 is now also supported.
-@item SDL 3 is supported.
+@item RAM dumps now include memory in expansions (e.g. SAMx8 or iMMUnity).
+This does not yet include cartridge-based expansions.
+
+@item The upper bits of MMU registers in a CoCo 3 with more than 512K of RAM
+are no longer readable by default, but can be configured so with
+@option{-machine-opt readable-dat}.
+
+@item New IDE cartridge profile @samp{ide-dragon} configured to use a built-in
+bootstrap ROM.  Ideal for BOOTing into Fuzix.  @xref{BSDOS}.
 
 @end itemize
 
@@ -133,16 +135,19 @@ Writes to images held in memory will overwrite the on-disk file when ejected
 back with @option{-no-disk-write-back}.
 
 The @myuref{https://www.6809.org.uk/dragon/samx8/, SAMx8} is supported by
-specifying a Dragon 64 with @option{-machine-opt sam=samx8}.
+specifying a Dragon 64 with @option{-machine-opt sam=samx8}, or by using the
+built-in @samp{dragonx8} machine profile.
 
-Traps can trigger actions when certain user-specified conditions are met.
-@xref{Debugging options}.
+Traps can trigger actions when certain user-specified conditions are met,
+including printing one or more lines of trace from the instruction that
+matched.
+
+When used with GDB, XRoar will report CPU architecture and a list of registers
+as a @emph{Target Description}.  The @option{-gdb-pseudo-regs} option will
+include extra state for some of the support ICs too.  @xref{Debugging options}.
 
 Gamepad mapping files can provide more consistent button layouts.
 @xref{Gamepad mapping}.
-
-RAM organisation selection with @option{-ram-org}, and initialisation pattern
-selection with @option{-ram-init}.
 
 MCX128 cartridge support for MC-10.
 
