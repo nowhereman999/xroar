@@ -2341,8 +2341,8 @@ events.  Conditions can be:
 @tab Trigger when tape motor switches off.
 @end multitable
 
-A trap will usually only trigger once.  To make one persistent, specify
-@option{-trap-range 1-}.
+A trap will usually trigger each time the condition is met.  To constrain to a
+range of matches, specify @option{-trap-range @var{m}[-@var{n}]}.
 
 Some older options are now implemented in terms of traps:
 
