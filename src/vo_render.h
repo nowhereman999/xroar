@@ -377,6 +377,9 @@ struct vo_render {
 	// array of RGB values
 	void (*render_rgb)(struct vo_render *, int_xyz *, void *, unsigned);
 
+	// Clear remaining lines in frame before drawing
+	void (*finish_frame)(struct vo_render *);
+
 	// Advance to next line
 	//     unsigned npixels;  // elapsed time in pixels
 	void (*next_line)(struct vo_render *, unsigned);

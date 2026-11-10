@@ -77,6 +77,7 @@ static void TNAME(render_cmp_2bit)(void *sptr, unsigned burstn,
 static void TNAME(render_cmp_5bit)(void *sptr, unsigned burstn,
 				   unsigned npixels, uint8_t const *data);
 static void TNAME(next_line)(struct vo_render *vr, unsigned npixels);
+static void TNAME(finish_frame)(struct vo_render *vr);
 static void TNAME(line_to_rgb)(struct vo_render *vr, int lno, uint8_t *dest);
 
 // Create an instance of the renderer for this basic type using the specified
@@ -95,6 +96,7 @@ struct vo_render *TNAME(renderer_new)(TNAME(map_rgb_func) map_rgb, TNAME(unmap_r
 	vr->render_cmp_2bit = TNAME(render_cmp_2bit);
 	vr->render_cmp_5bit = TNAME(render_cmp_5bit);
 	vr->next_line = TNAME(next_line);
+	vr->finish_frame = TNAME(finish_frame);
 	vr->line_to_rgb = TNAME(line_to_rgb);
 
 	return vr;
@@ -323,6 +325,25 @@ static void TNAME(next_line)(struct vo_render *vr, unsigned npixels) {
 	vr->pixel = (VR_PTYPE *)vr->pixel + vr->buffer_pitch;
 	vr->t = (vr->t + npixels) % vr->tmax;
 	vr->scanline++;
+}
+
+// A viewport can extend below the last scanline of a frame (notably NTSC
+// action/underscan).  Those rows may otherwise retain a previous frame's
+// pixels (e.g. after transition from 50Hz to 60Hz).  Clear any lines remaining
+// in the viewport.
+
+static void TNAME(finish_frame)(struct vo_render *vr) {
+	struct TNAME(vo_render) *vrt = (struct TNAME(vo_render) *)vr;
+	VR_PTYPE *dest = vr->pixel;
+	int y1 = vr->viewport.y + vr->viewport.h;
+	int x0 = vr->viewport.x;
+	int x1 = x0 + vr->viewport.w;
+	VR_PTYPE black = vrt->map_rgb(0, 0, 0);
+	for (int y = vr->scanline; y < y1; ++y) {
+		for (int x = x0; x < x1; ++x)
+			dest[x] = black;
+		dest += vr->buffer_pitch;
+	}
 }
 
 static void TNAME(line_to_rgb)(struct vo_render *vr, int lno, uint8_t *dest) {

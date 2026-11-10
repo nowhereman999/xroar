@@ -277,13 +277,15 @@ void vo_set_viewport(struct vo_interface *vo, int picture);
 
 void vo_set_draw_area(struct vo_interface *, int x, int y, int w, int h);
 
-// Vertical sync.  Calls any module-specific draw function if requested, then
-// vo_render_vsync().  Called with draw=0 during frameskip, as we still want to
-// count scanlines.
+// Vertical sync.  If requested, calls finish_frame() to clear remaining lines,
+// then any module-specific draw function.  Finally, calls vo_render_vsync().
+// Called with draw=0 during frameskip, as we still want to count scanlines.
 
 inline void vo_vsync(struct vo_interface *vo, bool draw) {
-	if (draw)
-		DELEGATE_SAFE_CALL(vo->draw);
+	if (draw && DELEGATE_DEFINED(vo->draw)) {
+		vo->renderer->finish_frame(vo->renderer);
+		DELEGATE_CALL(vo->draw);
+	}
 	vo_render_vsync(vo->renderer);
 }
 
