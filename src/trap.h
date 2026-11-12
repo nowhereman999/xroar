@@ -22,6 +22,9 @@
 struct slist;
 struct xroar_timeout;
 
+// TODO: many actions could in the first instance be stored here as ui messages
+// with values (greatly expanding the number of potential actions).
+
 struct trap_def {
 	// Trap condition
 	char *cond;
