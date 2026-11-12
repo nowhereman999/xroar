@@ -857,8 +857,8 @@ static void hd6309_run(struct MC6809 *cpu) {
 					default:
 					case 0: REG_X = ea; break;
 					case 1: REG_Y = ea; break;
-					case 2: REG_S = ea; break;
-					case 3: REG_U = ea; cpu->nmi_armed = 1; break;
+					case 2: REG_S = ea; cpu->nmi_armed = 1; break;
+					case 3: REG_U = ea; break;
 					}
 					NVMA_CYCLE;
 				}
