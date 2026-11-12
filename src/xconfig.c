@@ -96,6 +96,9 @@ static bool valid_dest(struct xconfig_option const *option, void *sptr) {
 	if (option->flags & XCONFIG_FLAG_CALL) {
 		bool valid_call = 0;
 		switch (option->type) {
+		case XCONFIG_NONE:
+			valid_call = option->dest.func_null != NULL;
+			break;
 		case XCONFIG_BOOL:
 		case XCONFIG_BOOL0:
 			valid_call = option->dest.func_bool != NULL;
@@ -111,9 +114,6 @@ static bool valid_dest(struct xconfig_option const *option, void *sptr) {
 			break;
 		case XCONFIG_STRING:
 			valid_call = option->dest.func_string != NULL;
-			break;
-		case XCONFIG_NONE:
-			valid_call = option->dest.func_null != NULL;
 			break;
 		case XCONFIG_ASSIGN:
 			valid_call = option->dest.func_assign != NULL;
@@ -207,6 +207,10 @@ static void set_option(const struct xconfig_set *set, struct xconfig_option cons
 		*(option->defined) = 1;
 
 	switch (option->type) {
+		case XCONFIG_NONE:
+			if (option->flags & XCONFIG_FLAG_CALL)
+				option->dest.func_null();
+			break;
 		case XCONFIG_BOOL:
 			if (option->flags & XCONFIG_FLAG_CALL)
 				option->dest.func_bool(1);
@@ -278,10 +282,6 @@ static void set_option(const struct xconfig_set *set, struct xconfig_option cons
 		case XCONFIG_STRING_LIST:
 			assert(!(option->flags & XCONFIG_FLAG_CALL));
 			*(struct slist **)object = slist_append(*(struct slist **)object, sdsdup(arg));
-			break;
-		case XCONFIG_NONE:
-			if (option->flags & XCONFIG_FLAG_CALL)
-				option->dest.func_null();
 			break;
 		case XCONFIG_ENUM: {
 			int val = lookup_enum((struct xconfig_enum *)option->ref, arg, -1);
@@ -416,11 +416,11 @@ enum xconfig_result xconfig_set_option_struct(const struct xconfig_set *set,
 		return XCONFIG_BAD_OPTION;
 	}
 	xconfig_warn_deprecated(option);
-	if (option->type == XCONFIG_BOOL ||
+	if (option->type == XCONFIG_NONE ||
+	    option->type == XCONFIG_BOOL ||
 	    option->type == XCONFIG_BOOL0 ||
 	    option->type == XCONFIG_INT0 ||
 	    option->type == XCONFIG_INT1 ||
-	    option->type == XCONFIG_NONE ||
 	    option->type == XCONFIG_ALIAS) {
 		set_option(set, option, NULL, sptr);
 		return XCONFIG_OK;
@@ -500,11 +500,11 @@ enum xconfig_result xconfig_parse_line_struct(const struct xconfig_set *set, con
 	sdsfree(opt);
 
 	xconfig_warn_deprecated(option);
-	if (option->type == XCONFIG_BOOL ||
+	if (option->type == XCONFIG_NONE ||
+	    option->type == XCONFIG_BOOL ||
 	    option->type == XCONFIG_BOOL0 ||
 	    option->type == XCONFIG_INT0 ||
 	    option->type == XCONFIG_INT1 ||
-	    option->type == XCONFIG_NONE ||
 	    option->type == XCONFIG_ALIAS) {
 		set_option(set, option, NULL, sptr);
 		sdsfree(input);
@@ -608,11 +608,11 @@ enum xconfig_result xconfig_parse_cli_struct(const struct xconfig_set *set,
 			return XCONFIG_BAD_OPTION;
 		}
 		xconfig_warn_deprecated(option);
-		if (option->type == XCONFIG_BOOL ||
+		if (option->type == XCONFIG_NONE ||
+		    option->type == XCONFIG_BOOL ||
 		    option->type == XCONFIG_BOOL0 ||
 		    option->type == XCONFIG_INT0 ||
 		    option->type == XCONFIG_INT1 ||
-		    option->type == XCONFIG_NONE ||
 		    option->type == XCONFIG_ALIAS) {
 			set_option(set, option, NULL, sptr);
 			_argn++;
