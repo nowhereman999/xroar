@@ -2264,6 +2264,10 @@ SAM, PIA or GIME state.
 @tab Start trace mode at trap for @var{n} instructions.
 @item @ @ @ @option{-trap-no-trace}
 @tab Stop trace mode at trap.
+@item @ @ @ @option{-trap-ratelimit}
+@tab Enable rate limiting at trap (run normal speed).
+@item @ @ @ @option{-trap-no-ratelimit}
+@tab Disable rate limiting at trap (run fast).
 
 @item @option{-timeout @var{n}}
 @tab Exit emulator after running for @var{n} seconds.

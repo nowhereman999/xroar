@@ -520,6 +520,12 @@ Start trace mode at trap for \fIn\fR instructions.
 .TP
 \f(CB\-trap\-no\-trace\fR
 Stop trace mode at trap.
+.TP
+\f(CB\-trap\-ratelimit\fR
+Enable rate limiting at trap (run normal speed).
+.TP
+\f(CB\-trap\-no\-ratelimit\fR
+Disable rate limiting at trap (run fast).
 .PP
 Trap \fIcondition\fRs can be one of the following:
 .P
