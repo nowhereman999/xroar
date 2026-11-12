@@ -261,6 +261,10 @@ static void handle_trap(void *sptr) {
 		LOG_MOD_DEBUG(2, "trap", "trace off\n");
 		xroar_set_trace(0, 0);
 	}
+	if (trap->ratelimit >= 0) {
+		LOG_MOD_DEBUG(2, "trap", "ratelimit %s\n", trap->ratelimit ? "on" : "off");
+		ui_update_state(-1, ui_tag_ratelimit_latch, trap->ratelimit, NULL);
+	}
 
 	if (range) {
 		if (range->last == (unsigned long)-1) {
@@ -315,6 +319,10 @@ void trap_set(const char *cond) {
 			cur_trap_def->no_trace = xroar.cfg.debug.trap_def.no_trace;
 			xroar.cfg.debug.trap_def.no_trace = -1;
 		}
+		if (xroar.cfg.debug.trap_def.ratelimit >= 0) {
+			cur_trap_def->ratelimit = xroar.cfg.debug.trap_def.ratelimit;
+			xroar.cfg.debug.trap_def.ratelimit = -1;
+		}
 	}
 	if (cond) {
 		unsigned i = num_trap_defs++;
@@ -324,6 +332,7 @@ void trap_set(const char *cond) {
 		cur_trap_def->cond = xstrdup(cond);
 		cur_trap_def->trace = -1;
 		cur_trap_def->no_trace = -1;
+		cur_trap_def->ratelimit = -1;
 	}
 }
 

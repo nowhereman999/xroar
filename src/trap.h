@@ -34,6 +34,7 @@ struct trap_def {
 	char *timeout;
 	int trace;
 	int no_trace;
+	int ratelimit;
 
 	// Internal
 	unsigned long counter;

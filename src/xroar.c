@@ -101,6 +101,7 @@ struct xroar xroar = {
 #ifdef WANT_TRAPS
 		.debug.trap_def.trace = -1,
 		.debug.trap_def.no_trace = -1,
+		.debug.trap_def.ratelimit = -1,
 #endif
 	},
 };
@@ -3015,6 +3016,8 @@ static struct xconfig_option const xroar_options[] = {
 	{ XC_SET_INT0("trap-trace", &xroar.cfg.debug.trap_def.trace) },
 	{ XC_SET_INT("trap-trace-n", &xroar.cfg.debug.trap_def.trace) },
 	{ XC_SET_INT1("trap-no-trace", &xroar.cfg.debug.trap_def.no_trace) },
+	{ XC_SET_INT1("trap-ratelimit", &xroar.cfg.debug.trap_def.ratelimit) },
+	{ XC_SET_INT0("trap-no-ratelimit", &xroar.cfg.debug.trap_def.ratelimit) },
 	// All now handled with traps:
 	{ XC_CALL_STRING("snap-motoroff", &set_snap_motoroff) },
 	{ XC_CALL_STRING("timeout", &set_timeout) },
@@ -3247,6 +3250,8 @@ static void helptext(void) {
 "    -trap-trace         start trace mode at trap\n"
 "    -trap-trace-n N     start trace mode at trap for N instructions\n"
 "    -trap-no-trace      stop trace mode at trap\n"
+"    -trap-ratelimit     enable rate limiting at trap (run normal speed)\n"
+"    -trap-no-ratelimit  disable rate limiting at trap (run fast)\n"
 "  -timeout N            run for N seconds then quit\n"
 "  -timeout-motoroff N   quit N seconds after tape motor switches off\n"
 "  -snap-motoroff FILE   write a snapshot each time tape motor switches off\n"
