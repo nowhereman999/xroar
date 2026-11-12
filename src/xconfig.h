@@ -141,7 +141,7 @@ enum xconfig_result {
 	XCONFIG_FILE_ERROR
 };
 
-enum xconfig_option_type {
+enum xconfig_type {
 	XCONFIG_BOOL,
 	XCONFIG_BOOL0,  // unsets a BOOL
 	XCONFIG_INT,
@@ -169,7 +169,7 @@ typedef void (*xconfig_func_assign)(const char *, struct sdsx_list *);
 typedef void (*xconfig_func_null)(void);
 
 struct xconfig_option {
-	enum xconfig_option_type type;
+	enum xconfig_type type;
 	const char *name;
 	union {
 		void *object;
