@@ -1,3 +1,5 @@
+Version 1.13, Sat 14 Nov 2026
+
  * Report iMMUnity registers to GDB
  * Include SAMx8 / iMMUnity in RAM dumps
  * Default to representing CPU CC registers to GDB as flags, not structs

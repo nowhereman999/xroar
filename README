@@ -51,16 +51,17 @@ an example.
 Recent changes
 ==============
 
-Changes in version 1.12 include:
+Changes in version 1.13 include:
 
-   * Monochrome display support, contribute by Erik Gavriluk.  Select
-     from the TV Controls dialog, or with the '-vo-monochrome' options.
-   * XRoar will report CPU architecture and a list registers to GDB as a
-     _Target Description_.  With the '-gdb-pseudo-regs', it will include
-     extra state for the PIAs, SAM, SAMx8 or GIME for inspection or
-     manipulation by GDB. The 6803 CPU in the MC-10 is now also
-     supported.
-   * SDL 3 is supported.
+   * RAM dumps now include memory in expansions (e.g.  SAMx8 or
+     iMMUnity).  This does not yet include cartridge-based expansions.
+
+   * The upper bits of MMU registers in a CoCo 3 with more than 512K of
+     RAM are no longer readable by default, but can be configured so
+     with '-machine-opt readable-dat'.
+
+   * New IDE cartridge profile 'ide-dragon' configured to use a built-in
+     bootstrap ROM. Ideal for BOOTing into Fuzix.  *Note BSDOS::.
 
    Previous changes in 1.x include:
 
@@ -70,16 +71,20 @@ ejected (or quitting XRoar).  You can get the old file-preserving
 default behaviour back with '-no-disk-write-back'.
 
    The SAMx8 (https://www.6809.org.uk/dragon/samx8/) is supported by
-specifying a Dragon 64 with '-machine-opt sam=samx8'.
+specifying a Dragon 64 with '-machine-opt sam=samx8', or by using the
+built-in 'dragonx8' machine profile.
 
    Traps can trigger actions when certain user-specified conditions are
-met.  *Note Debugging options::.
+met, including printing one or more lines of trace from the instruction
+that matched.
+
+   When used with GDB, XRoar will report CPU architecture and a list of
+registers as a _Target Description_.  The '-gdb-pseudo-regs' option will
+include extra state for some of the support ICs too.  *Note Debugging
+options::.
 
    Gamepad mapping files can provide more consistent button layouts.
 *Note Gamepad mapping::.
-
-   RAM organisation selection with '-ram-org', and initialisation
-pattern selection with '-ram-init'.
 
    MCX128 cartridge support for MC-10.
 
@@ -294,8 +299,8 @@ process should be very familiar.  The following process compiles XRoar
 and installs it into '/usr/local', like most other software built this
 way:
 
-     $ gzip -dc xroar-1.12.tar.gz | tar xvf -
-     $ cd xroar-1.12
+     $ gzip -dc xroar-1.13.tar.gz | tar xvf -
+     $ cd xroar-1.13
      $ ./configure
      $ make
      $ sudo make install
