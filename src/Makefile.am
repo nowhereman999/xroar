@@ -233,7 +233,7 @@ bsdos/bsdos.c: bsdos/bsdos.rom
 BUILT_SOURCES += bsdos/bsdos.c
 
 EXTRA_DIST += \
-	bsdos/bsdos.s bsdos/bsdos.rom bsdos/bsdos.c
+	bsdos/bsdos.s bsdos/idelba.s bsdos/bsdos.rom bsdos/bsdos.c
 
 # ROM paths
 
