@@ -57,7 +57,6 @@ enum vdg_render_mode {
 	TCC1014_RENDER_SG,
 	TCC1014_RENDER_CG,
 	TCC1014_RENDER_RG,
-	TCC1014_RENDER_RG2,
 };
 
 // GIME variant constants
@@ -1336,8 +1335,6 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 				if (gime->VDG.GM0) {
 					if (gime->resolution || (gime->PIA1B_shadow.pdr & 0x70) == 0x70) {
 						render_mode = TCC1014_RENDER_RG;
-					} else {
-						render_mode = TCC1014_RENDER_RG2;
 					}
 				} else {
 					render_mode = TCC1014_RENDER_CG;
@@ -1431,11 +1428,6 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 					c1 = gime->palette_reg[(gdata&0x40) ? fg_colour : bg_colour];
 					c2 = gime->palette_reg[(gdata&0x20) ? fg_colour : bg_colour];
 					c3 = gime->palette_reg[(gdata&0x10) ? fg_colour : bg_colour];
-					gdata <<= 4;
-					break;
-				case TCC1014_RENDER_RG2:
-					c0 = c1 = gime->palette_reg[(gdata&0x40) ? fg_colour : bg_colour];
-					c2 = c3 = gime->palette_reg[(gdata&0x10) ? fg_colour : bg_colour];
 					gdata <<= 4;
 					break;
 				}
