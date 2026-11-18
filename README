@@ -316,3 +316,6 @@ normal.
    The 'configure' script has a lot of options guiding what it tests
 for, specifying cross-compilation, changing the install path, etc.  List
 them all with the '--help' option.
+
+COCOWAR / AV_Banger maintained branch:
+See docs/COCOWAR_UPGRADES.md for Codex/Grok Rev upgrade and acceptance steps.

@@ -1,0 +1,2 @@
+# Explicit Obj-C driver; exporter also canonicalizes hunk labels.
+*.m diff=objc
