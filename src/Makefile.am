@@ -29,6 +29,7 @@ xroar_SOURCES = \
 	crc16.c crc16.h \
 	crc32.c crc32.h \
 	debug.c debug.h \
+	decb_bin.c decb_bin.h \
 	dkbd.c dkbd.h \
 	events.c events.h \
 	filter.c filter.h \
