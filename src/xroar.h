@@ -98,6 +98,9 @@ struct xroar_cfg {
 		struct slist *bind_list;
 	} kbd;
 
+	// Optional inherited full-duplex socket for the CoCo 3 serial jack.
+	int serial_fd;
+
 	// Becker port
 	struct {
 		bool prefer;

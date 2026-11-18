@@ -14,6 +14,12 @@
 
 #include "top-config.h"
 
+#if !defined(WINDOWS32) && !defined(HAVE_WASM)
+#define COCO3_SERIAL_FD
+#include <errno.h>
+#include <sys/socket.h>
+#endif
+
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
@@ -123,8 +129,123 @@ static struct {
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+#ifdef COCO3_SERIAL_FD
+// External UART at the serial jack. PA1 is the CoCo output (8N1);
+// PB0 carries the return waveform (8N2). Both clocks run in GIME ticks.
+struct serial_jack {
+	int fd;
+	struct MC6821 *pia;
+	struct event tx_sample, rx_edge;
+	bool tx_level;
+	unsigned tx_bit, rx_bits;
+	uint8_t tx_byte;
+	unsigned rx_shift, baud, rate_match, rate_token;
+	bool rate_after_reply;
+	event_ticks low_since;
+};
+
+#define SERIAL_BIT_TICKS ((EVENT_TICK_RATE + s->baud/2) / s->baud)
+#include "av_baud.inc"
+
+static void serial_rx_level(struct serial_jack *s, bool high) {
+	if (high) {
+		s->pia->b.in_source |= 1;
+		s->pia->b.in_sink |= 1;
+	} else {
+		s->pia->b.in_source &= ~1;
+		s->pia->b.in_sink &= ~1;
+	}
+}
+
+static void serial_disconnect(struct serial_jack *s) {
+	event_dequeue(&s->tx_sample);
+	event_dequeue(&s->rx_edge);
+	close(s->fd);
+	s->fd = -1;
+	serial_rx_level(s, 1);
+}
+
+static void serial_sample_tx(void *sptr) {
+	struct serial_jack *s = sptr;
+	if (s->tx_bit == 0) {
+		if (s->tx_level) return;  // start pulse shorter than half a bit
+		s->tx_byte = 0;
+	} else if (s->tx_bit <= 8) {
+		if (s->tx_level) s->tx_byte |= 1u << (s->tx_bit - 1);
+	} else {
+		if (getenv("COCOWAR_UART_TRACE")) fprintf(stderr,"TX %u %02x stop=%d at %u\n",s->baud,s->tx_byte,s->tx_level,(unsigned)event_current_tick);
+		if (s->tx_level && send(s->fd, &s->tx_byte, 1, MSG_DONTWAIT | MSG_NOSIGNAL) != 1) {
+			LOG_MOD_WARN("serial", "serial peer stopped accepting data\n");
+			serial_disconnect(s);
+		}
+		return;
+	}
+	++s->tx_bit;
+	event_queue_dt(&s->tx_sample, SERIAL_BIT_TICKS);
+}
+
+static void serial_tx_level(struct serial_jack *s, bool high) {
+	if (s->fd >= 0 && s->tx_level && !high && !event_queued(&s->tx_sample)) {
+		s->tx_bit = 0;
+		event_queue_dt(&s->tx_sample, SERIAL_BIT_TICKS / 2);
+	}
+	if (s->tx_level && !high) s->low_since = event_current_tick;
+	if (!s->tx_level && high && event_current_tick-s->low_since >= EVENT_MS(5)) {
+		s->baud=38400; s->rate_match=0; s->rate_after_reply=false;
+	}
+	s->tx_level = high;
+}
+
+static void serial_drive_rx(void *sptr) {
+	struct serial_jack *s = sptr;
+	if (!s->rx_bits) {
+		if (s->rate_after_reply) { s->baud=115200; s->rate_after_reply=false; }
+		uint8_t byte;
+		ssize_t n = recv(s->fd, &byte, 1, MSG_DONTWAIT);
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+			event_queue_dt(&s->rx_edge, EVENT_MS(1));
+			return;
+		}
+		if (n != 1) {
+			serial_disconnect(s);
+			return;
+		}
+		if (getenv("COCOWAR_UART_TRACE")) fprintf(stderr,"RX %u %02x\n",s->baud,byte);
+		av_uart_reply_byte(s,byte);
+		s->rx_shift = (3u << 9) | ((unsigned)byte << 1);
+		s->rx_bits = 11;
+	}
+	serial_rx_level(s, s->rx_shift & 1);
+	s->rx_shift >>= 1;
+	--s->rx_bits;
+	event_queue_dt(&s->rx_edge, SERIAL_BIT_TICKS);
+}
+
+static struct serial_jack *serial_attach(int fd, struct MC6821 *pia) {
+	if (fd < 0) return NULL;
+	int socktype;
+	socklen_t size = sizeof(socktype);
+	if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &socktype, &size) || socktype != SOCK_STREAM) {
+		LOG_MOD_WARN("serial", "-serial-fd requires a connected stream socket\n");
+		return NULL;
+	}
+	int copy = dup(fd);
+	if (copy < 0) return NULL;
+	struct serial_jack *s = xmalloc(sizeof(*s));
+	*s = (struct serial_jack){ .fd = copy, .baud = 38400, .pia = pia, .tx_level = true };
+	event_init(&s->tx_sample, MACHINE_EVENT_LIST, DELEGATE_AS0(void, serial_sample_tx, s));
+	event_init(&s->rx_edge, MACHINE_EVENT_LIST, DELEGATE_AS0(void, serial_drive_rx, s));
+	serial_rx_level(s, 1);
+	event_queue_dt(&s->rx_edge, EVENT_MS(1));
+	return s;
+}
+#endif
+
 struct coco3 {
 	struct machine public;
+#ifdef COCO3_SERIAL_FD
+	struct serial_jack *serial;
+#endif
 
 	struct MC6809 *CPU;
 	struct TCC1014 *GIME;
@@ -535,15 +656,19 @@ static bool coco3_finish(struct part *p) {
 	mcc3->ROM0 = rombank_new(8, 32768, 1);
 
 	// Super Extended Colour BASIC
-        if (mc->extbas_rom) {
-                sds tmp = romlist_find(mc->extbas_rom);
-                if (tmp) {
-                        rombank_load_image(mcc3->ROM0, 0, tmp, 0);
-                        sdsfree(tmp);
-                }
+		if (mc->extbas_rom) {
+				sds tmp = romlist_find(mc->extbas_rom);
+				if (tmp) {
+						rombank_load_image(mcc3->ROM0, 0, tmp, 0);
+						sdsfree(tmp);
+				} else {
+			LOG_MOD_WARN("coco3", "BASIC ROM not found (romlist %s, rompath %s)\n",
+				     mc->extbas_rom,
+				     xroar.cfg.file.rompath ? xroar.cfg.file.rompath : "(none)");
+		}
 	}
 
-	// Report and check CRC (Super Extended Colour BASIC)
+	// Report the loaded Super Extended Colour BASIC ROM metadata.
 	rombank_report(mcc3->ROM0, "coco3", "Super Extended Colour BASIC");
 
 	// RAM configuration
@@ -673,8 +798,11 @@ static bool coco3_finish(struct part *p) {
 	ui_update_state(-1, ui_tag_tv_input, mc->tv_input, NULL);
 	ui_update_state(-1, ui_tag_vdg_inverse, mcc3->inverted_text, NULL);
 
-	// Until I implement serial, this appear to pull low by default
+	// An unattached serial input reads low.
 	mcc3->PIA1->b.in_sink &= ~(1<<0);
+#ifdef COCO3_SERIAL_FD
+	mcc3->serial = serial_attach(xroar.cfg.serial_fd, mcc3->PIA1);
+#endif
 
 	// Keyboard interface
 	mcc3->keyboard.interface = keyboard_interface_new();
@@ -705,6 +833,15 @@ static bool coco3_finish(struct part *p) {
 
 static void coco3_free(struct part *p) {
 	struct coco3 *mcc3 = (struct coco3 *)p;
+#ifdef COCO3_SERIAL_FD
+	if (mcc3->serial) {
+		struct serial_jack *s = mcc3->serial;
+		event_dequeue(&s->tx_sample);
+		event_dequeue(&s->rx_edge);
+		if (s->fd >= 0) close(s->fd);
+		free(s);
+	}
+#endif
 	// Stop receiving any UI state updates
 	messenger_client_unregister(mcc3->msgr_client_id);
 	machine_remove_breakpoint_all(&mcc3->public, NULL);
@@ -1413,6 +1550,9 @@ static void pia0a_data_preread(void *sptr) {
 
 static void pia1a_data_postwrite(void *sptr) {
 	struct coco3 *mcc3 = sptr;
+#ifdef COCO3_SERIAL_FD
+	if (mcc3->serial) serial_tx_level(mcc3->serial, PIA_VALUE_A(mcc3->PIA1) & 2);
+#endif
 	sound_set_dac_level(mcc3->snd, (float)(PIA_VALUE_A(mcc3->PIA1) & 0xfc) / 252.);
 	tape_update_output(mcc3->tape_interface, mcc3->PIA1->a.out_sink & 0xfc);
 }

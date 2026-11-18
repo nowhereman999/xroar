@@ -91,6 +91,7 @@
 struct xroar xroar = {
 	// Configuration directives
 	.cfg = {
+		.serial_fd = -1,
 		.ao.fragments = -1,
 		.tape.pan = 0.5,
 		.tape.hysteresis = 1.0,
@@ -3004,6 +3005,11 @@ static struct xconfig_option const xroar_options[] = {
 	{ XC_SET_INT("mpi-slot", &private_cfg.cart.mpi.initial_slot) },
 	{ XC_CALL_STRING("mpi-load-cart", &cfg_mpi_load_cart) },
 
+	/* CoCo 3 serial jack: */
+#if !defined(WINDOWS32) && !defined(HAVE_WASM)
+	{ XC_SET_INT("serial-fd", &xroar.cfg.serial_fd) },
+#endif
+
 	/* Becker port: */
 	{ XC_SET_BOOL("becker", &xroar.cfg.becker.prefer) },
 	{ XC_SET_STRING("becker-ip", &xroar.cfg.becker.ip) },
@@ -3236,6 +3242,11 @@ static void helptext(void) {
 "                            (MPI) insert cartridge into next or numbered slot\n"
 "\n"
 
+#if !defined(WINDOWS32) && !defined(HAVE_WASM)
+" Serial jack:\n"
+"  -serial-fd FD         CoCo 3 serial jack, 38400 baud, connected POSIX socket FD\n"
+"\n"
+#endif
 " Becker port:\n"
 "  -becker               prefer becker-enabled DOS (when picked automatically)\n"
 "  -becker-ip ADDRESS    address or hostname of DriveWire server [" BECKER_IP_DEFAULT "]\n"
