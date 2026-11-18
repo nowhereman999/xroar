@@ -639,3 +639,30 @@ if FILEREQ_CLI
 xroar_SOURCES += \
 	filereq_cli.c
 endif
+
+# Host-side CoCoSDC tests: CommSDC register engine, temp sdc-root, stream.
+# No SDL, ROMs, or CoCo program.  `make check` runs them after ./configure;
+# ./tools/run-cocosdc-tests.sh works without autotools.
+
+check_PROGRAMS = cocosdc_hw_test cocosdc_fs_test cocosdc_io_error_test decb_bin_test
+TESTS = $(check_PROGRAMS)
+
+cocosdc_hw_test_SOURCES = $(top_srcdir)/tools/cocosdc_hw_test.c
+cocosdc_hw_test_CPPFLAGS = -I$(top_srcdir)/src
+cocosdc_hw_test_CFLAGS = -std=c11 -Wall
+cocosdc_hw_test_LDADD =
+
+cocosdc_fs_test_SOURCES = $(top_srcdir)/tools/cocosdc_fs_test.c cocosdc_fs.c cocosdc_fdc.c
+cocosdc_fs_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+cocosdc_fs_test_CFLAGS = -std=c11 -Wall
+cocosdc_fs_test_LDADD =
+
+cocosdc_io_error_test_SOURCES = $(top_srcdir)/tools/cocosdc_io_error_test.c
+cocosdc_io_error_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+cocosdc_io_error_test_CFLAGS = -std=c11 -Wall
+cocosdc_io_error_test_LDADD =
+
+decb_bin_test_SOURCES = $(top_srcdir)/tools/decb_bin_test.c decb_bin.c
+decb_bin_test_CPPFLAGS = -I$(top_srcdir) -I$(top_srcdir)/src
+decb_bin_test_CFLAGS = -std=c11 -Wall
+decb_bin_test_LDADD =
