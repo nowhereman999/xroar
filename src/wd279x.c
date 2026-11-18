@@ -1,23 +1,20 @@
-/** \file
+/* WD279x Floppy Drive Controller.
  *
- *  \brief WD279x Floppy Drive Controller.
+ * Copyright 2003-2025 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2025 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* Sources
  *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
- *
- *  \par Sources
- *
- *  - TMS279X datasheet, http://www.swtpc.com/mholley/DC_5/TMS279X_DataSheet.pdf
+ * - TMS279X datasheet, http://www.swtpc.com/mholley/DC_5/TMS279X_DataSheet.pdf
  */
 
 #include "top-config.h"
@@ -34,6 +31,7 @@
 #include "logging.h"
 #include "part.h"
 #include "serialise.h"
+#include "ui.h"
 #include "vdrive.h"
 #include "wd279x.h"
 #include "xroar.h"
@@ -160,6 +158,7 @@ static const char * const wd279x_type_name[4] = {
 static void wd279x_state_machine(void *);
 static uint8_t wd279x_read_byte(struct WD279X *);
 static void wd279x_write_byte(struct WD279X *, uint8_t b);
+static void wd279x_report_status(const struct WD279X *);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 // Debugging
@@ -377,6 +376,11 @@ uint8_t wd279x_read(struct WD279X *fdc, uint16_t A) {
 					fdc->status_register |= STATUS_INDEX_PULSE;
 			}
 			D = fdc->status_register;
+			// The state machine clears BUSY and returns without a
+			// further iteration, so the "command finished" edge
+			// would never be reported from there.  DOS polls this
+			// register, which makes it a reliable place to notice.
+			wd279x_report_status(fdc);
 			break;
 		case 1:
 			D = fdc->track_register;
@@ -451,10 +455,51 @@ void wd279x_write(struct WD279X *fdc, uint16_t A, uint8_t D) {
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-/** \brief WD279X state machine
+/* WD279X state machine
  *
  * This is called from an event dispatch and from the write command function.
  */
+
+// Map the command in progress to a coarse activity class for the UI.  Derived
+// from the command register rather than the state, as the same states are
+// visited by both reads and writes while searching for a sector.
+
+static unsigned wd279x_activity(const struct WD279X *fdc) {
+	if (!(fdc->status_register & STATUS_BUSY)) {
+		return WD279X_ACTIVITY_IDLE;
+	}
+	switch ((fdc->command_register >> 4) & 15) {
+	case 8: case 9:    // Type II - read sector
+	case 12:           // Type III - read address
+	case 14:           // Type III - read track
+		return WD279X_ACTIVITY_READ;
+	case 10: case 11:  // Type II - write sector
+	case 15:           // Type III - write track
+		return WD279X_ACTIVITY_WRITE;
+	default:           // Type I - restore/seek/step
+		return WD279X_ACTIVITY_SEEK;
+	}
+}
+
+// Report controller activity to the UI, but only when something visible
+// changed - this is called from the state machine loop, which iterates far
+// more often than the readout needs updating.
+
+static void wd279x_report_status(const struct WD279X *fdc) {
+	static struct wd279x_status last = { .active = ~0U, .track = ~0U, .sector = ~0U, .side = ~0U };
+	struct wd279x_status st = {
+		.active = wd279x_activity(fdc),
+		.track = fdc->track_register,
+		.sector = fdc->sector_register,
+		.side = (unsigned)fdc->side,
+	};
+	if (st.active == last.active && st.track == last.track &&
+	    st.sector == last.sector && st.side == last.side) {
+		return;
+	}
+	last = st;
+	ui_update_state(-1, ui_tag_fdc_status, 0, &st);
+}
 
 static void wd279x_state_machine(void *sptr) {
 	struct WD279X *fdc = (struct WD279X *)sptr;
@@ -469,6 +514,9 @@ static void wd279x_state_machine(void *sptr) {
 				last_state = fdc->state;
 			}
 		}
+
+		// Keep any UI activity indicator in step with the controller.
+		wd279x_report_status(fdc);
 
 		switch (fdc->state) {
 

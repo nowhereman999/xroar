@@ -1,19 +1,15 @@
-/** \file
+/* Tandy Colour Computer 1/2 machines.
  *
- *  \brief Tandy Colour Computer 1/2 machines.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -161,14 +157,6 @@ static bool coco_finish(struct part *p) {
 
 	// Report BASIC
 	rombank_report(md->ROM0, p->partdb->name, "BASIC");
-
-	// Check CRCs
-	md->crc_bas = (mc->ram > 4) ? 0xd8f4d15e : 0x00b50aaa;  // CB 1.3/1.0
-	const char *crclist = (mc->ram > 4) ? "@coco" : "@bas10";
-	md->has_bas = rombank_verify_crc(md->ROM0, "Colour BASIC", 1, crclist, xroar.cfg.force_crc_match, &md->crc_bas);
-
-	md->crc_extbas = 0xa82a6254;  // ECB 1.1
-	md->has_extbas = rombank_verify_crc(md->ROM0, "Extended Colour BASIC", 0, "@cocoext", xroar.cfg.force_crc_match, &md->crc_extbas);
 
 	coco_pia_configuration(md);
 

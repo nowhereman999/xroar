@@ -911,3 +911,22 @@ SDC/FDC registers are unchanged. This supersedes the unconditional
 
 The Mac 60Hz scaling menu checkmark was also corrected: it now reflects the
 actual boolean rather than comparing it with the menu tag's zero value.
+
+## Dragon command-mode support (2026-10-01)
+
+`-machine dragon32 -cart cocosdc -cart-opt sdc-dragon -sdc-root DIR`
+selects the physical DRGN address arrangement: latch FF48, command/status
+FF40, parameters/data FF41-FF43, flash scratch FF4A. The option is serialized
+in snapshots. Becker follows the exchange too (FF49 status, FF4A data).
+Entering command mode selects flash scratch again for timed movie players.
+CoCo mode remains the default. This option currently covers native command
+mode; it does not add DragonDOS FDC latch/DRQ semantics or a Dragon DOS ROM.
+Studio uses a blank cartridge ROM plus direct injection for compiled programs.
+
+The shared filesystem now implements `R:old-path NUL new-leaf NUL`, used by
+managed UPDATE transactions. It checks bounded strings, rejects path traversal,
+mounted files and existing destinations, and keeps the destination in the source
+directory. Previously this firmware command returned INVALID on both machines.
+The host suite includes rename success, old/new names, malformed requests,
+existing-file protection and mounted-file rejection. Compiler emulator checks
+are in `tools/test-dragon-sdc.py` in the CoCo BASIC Studio repository.

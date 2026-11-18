@@ -450,14 +450,6 @@ is only used when connected to a CoCo 3).
 
 <dd>Print defined ROM lists.
 
-<dt><code>-crclist</code> <var>name</var>=<var>list</var>
-
-<dd>Define a ROM CRC list.
-
-<dt><code>-crclist-print</code>
-
-<dd>Print defined ROM CRC lists.
-
 <dt><code>-force-crc-match</code>
 
 <dd>Force per-architecture CRC matches.
@@ -620,6 +612,10 @@ is only used when connected to a CoCo 3).
 
 <dd>Enable pseudo-registers (e.g. SAM, PIA) for GDB.
 
+<dt><code>-gdb-flags-as-struct</code>
+
+<dd>Describe CPU flags as a struct to GDB.
+
 <dt><code>-no-ratelimit</code>
 
 <dd>Run CPU as fast as possible.
@@ -689,6 +685,14 @@ is only used when connected to a CoCo 3).
 <dt><code>-trap-no-trace</code>
 
 <dd>Stop trace mode at trap.
+
+<dt><code>-trap-ratelimit</code>
+
+<dd>Enable rate limiting at trap (run normal speed).
+
+<dt><code>-trap-no-ratelimit</code>
+
+<dd>Disable rate limiting at trap (run fast).
 
 </dl>
 

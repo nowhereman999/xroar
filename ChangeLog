@@ -1,3 +1,26 @@
+Version 1.13.1, Sun 15 Nov 2026
+
+ * Fix 16-byte VDG-compatible modes in GIME
+
+Version 1.13, Sat 14 Nov 2026
+
+ * Report iMMUnity registers to GDB
+ * Include SAMx8 / iMMUnity in RAM dumps
+ * Default to representing CPU CC registers to GDB as flags, not structs
+ * New option -gdb-flags-as-struct to return to old behaviour
+ * RAM dumps now include SAMx8/iMMUnity connected RAM [Pere Serrat]
+ * 6309 timing fixes [by Erik Gavriluk]
+ * FDC floppy disk sector reporting to UI [with Mauricio Matte]
+ * Shutdown cleanly on SIGTERM, SIGINT [Erik Gavriluk]
+ * Fix 2- and 5-bit LUT rendering of high-res GIME modes [with Glen Hewlett]
+ * iMMUnity fixes [by John Federico]
+ * Fix 6809/6309 memory access pattern for TSTA, TSTB
+ * New option "-machine-opt readable-dat" for CoCo3
+ * New ide-dragon cart profile includes built-in BSDOS ROM to BOOT only
+ * Clear to end of viewport before display; old data could be visible after
+   60Hz->50Hz switch [by Glen Hewlett]
+ * New options -trap-ratelimit, -trap-no-ratelimit
+
 Version 1.12, Mon 27 Jul 2026
 
  * Internal rework of breakpoints and watchpoints
@@ -771,6 +794,8 @@ Version 0.8, Mon  3 May 2004
 
 Version 0.7, Wed  7 Apr 2004
 
+  * Sun audio support.
+  * Initial disk support.
   * Added basic Unix joystick support (using SDL).
   * PIA0 addressing more specific (D64-style), OS-9 boots!
   * PIA implementation simplified.
@@ -780,4 +805,35 @@ Version 0.7, Wed  7 Apr 2004
 
 Version 0.6, Thu 17 Apr 2003
 
+  * GP32 support was added at some point prior to this.
+  * Faster CPU using large switch/case instead of function dispatch tables.
+  * Undo some early CPU rate bodges.
   * Joystick support available in the GP32 version.
+  * Initial support for loading ROM images with DGN headers.
+  * Buzzard Bait working.
+  * Lucifer's Kingdom and Rommel's Revenge not working.
+
+Version 0.0.4, Tue 25 Mar 2003
+
+  * Implemented CWAI, SWI, SWI2, SWI3.
+  * Fixed semigraphics characters.
+  * Much better sound support, but requires OSS (doesn't use SDL audio).
+
+Version 0.0.3, Sun 23 Mar 2003
+
+  * Fix CC tests in ADD.
+  * Better SAM-VDG memory model.  Seems to work for all semigraphics modes and
+    all PMODEs (including DMA mode).
+
+Version 0.0.2, Sat 22 Mar 2003
+
+  * Code tidying.
+  * First try at implementing SAM-VDG memory model.
+  * Good enough to play Chuckie Egg in full colour.
+
+Version 0.0.1, Fri 21 Mar 2003
+
+  * Binary-only release to a few people.
+  * Plays Chuckie Egg in 2-colour mode with sound.
+
+Project started, Tue 11 Mar 2003

@@ -1,19 +1,15 @@
-/** \file
+/* Dragon 32 and Tandy Colour Computer 1/2 machines.
  *
- *  \brief Dragon 32 and Tandy Colour Computer 1/2 machines.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -126,10 +122,6 @@ static bool dragon32_finish(struct part *p) {
 
 	// Report BASIC
 	rombank_report(md->ROM0, p->partdb->name, "BASIC");
-
-	// Check CRCs
-	md->crc_combined = 0xe3879310;  // Dragon 32 BASIC
-	md->has_combined = rombank_verify_crc(md->ROM0, "BASIC", -1, "@d32", xroar.cfg.force_crc_match, &md->crc_combined);
 
 	// Machine-specific PIA connections
 	switch (mc->ram_org) {

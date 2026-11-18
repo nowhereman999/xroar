@@ -1,19 +1,15 @@
-/** \file
+/* ROM filename database.
  *
- *  \brief ROM filename database.
+ * Copyright 2012-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2012-2024 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -30,6 +26,7 @@
 #include "xalloc.h"
 
 #include "path.h"
+#include "rom.h"
 #include "romlist.h"
 #include "xroar.h"
 
@@ -43,11 +40,9 @@ struct romlist {
 /* List containing all defined rom lists */
 static struct slist *romlist_list = NULL;
 
-#ifndef HAVE_WASM
 static char const * const rom_extensions[] = {
-	"", ".rom", ".ROM", ".dgn", ".DGN"
+	".rom", ".ROM", ".dgn", ".DGN", ".ccc", ".CCC"
 };
-#endif
 
 static int compare_entry(const void *a, const void *b) {
 	const struct romlist *aa = a;
@@ -55,7 +50,7 @@ static int compare_entry(const void *a, const void *b) {
 	return strcmp(aa->name, bb);
 }
 
-/**************************************************************************/
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static struct romlist *new_romlist(const char *name) {
 	struct romlist *new = xmalloc(sizeof(*new));
@@ -135,8 +130,30 @@ static sds find_rom(const char *romname) {
 		path = find_in_path(rompath, filename);
 		if (path) break;
 	}
+	if (!path) {
+		sdssetlen(filename, filename_len);
+		filename = sdscat(filename, "");
+		if (rom_builtin_by_name(filename)) {
+			return filename;
+		}
+		path = find_in_path(rompath, filename);
+	}
 	sdsfree(filename);
 	return path;
+}
+#endif
+
+#ifdef HAVE_WASM
+static bool have_rom_extension(sds filename) {
+	size_t f_len = sdslen(filename);
+	for (unsigned i = 0; i < ARRAY_N_ELEMENTS(rom_extensions); i++) {
+		size_t e_len = strlen(rom_extensions[i]);
+		if (f_len >= e_len &&
+		    0 == c_strcasecmp(filename + f_len - e_len, rom_extensions[i])) {
+			return true;
+		}
+	}
+	return false;
 }
 #endif
 
@@ -149,18 +166,18 @@ sds romlist_find(const char *name) {
 #ifdef HAVE_WASM
 		// For WebAssembly we short-circuit the ROM list and only
 		// consider the first non-list entry we encounter.  We also
-		// ensure it ends with ".rom".
+		// ensure it has a valid file extension.
 		sds filename = sdsnew(name);
-		size_t filename_length = sdslen(filename);
-		if (filename_length >= 4 &&
-		    (0 == c_strcasecmp(".ccc", filename + filename_length - 4) ||
-		     0 == c_strcasecmp(".rom", filename + filename_length - 4))) {
+		if (have_rom_extension(filename)) {
 			return filename;
 		}
-		filename = sdscat(filename, ".rom");
+		if (!rom_builtin_by_name(filename)) {
+			filename = sdscat(filename, ".rom");
+		}
 		return filename;
 #else
-		return find_rom(name);
+		sds r = find_rom(name);
+		return r;
 #endif
 	}
 	struct romlist *romlist = find_romlist(name+1);
@@ -175,13 +192,9 @@ sds romlist_find(const char *name) {
 	for (iter = romlist->list; iter; iter = iter->next) {
 		char *ent = iter->data;
 		if (ent) {
-			//if (ent[0] == '@') {
-				if ((path = romlist_find(ent))) {
-					break;
-				}
-			//} else if ((path = find_rom(ent))) {
-			//	break;
-			//}
+			if ((path = romlist_find(ent))) {
+				break;
+			}
 		}
 	}
 	romlist->flag = 0;

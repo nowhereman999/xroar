@@ -1,40 +1,36 @@
-/** \file
+/* Motorola MC6809 CPU.
  *
- *  \brief Motorola MC6809 CPU.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* Sources
  *
- *  See COPYING.GPL for redistribution conditions.
+ * - MC6809E data sheet, Motorola
  *
- *  \endlicenseblock
+ * - MC6809 Cycle-By-Cycle Performance,
+ *   http://atjs.great-site.net/mc6809/Information/6809cyc.txt
  *
- *  \par Sources
+ * - Dragon Update, Illegal Op-codes, Feb 1994 Ciaran Anscomb
  *
- *  -  MC6809E data sheet, Motorola
+ * - Motorola 6809 and Hitachi 6309 Programmers Reference, 2009 Darren Atkinson
+ *   [darrena]
  *
- *  -  MC6809 Cycle-By-Cycle Performance,
- *     http://atjs.great-site.net/mc6809/Information/6809cyc.txt
+ * - Undocumented 6809 Behaviours, David Banks [hoglet67],
+ *   https://github.com/hoglet67/6809Decoder/wiki/Undocumented-6809-Behaviours
  *
- *  -  Dragon Update, Illegal Op-codes, Feb 1994 Ciaran Anscomb
+ * - The Comprehensive Document of 6809 Undocumented and Undefined Behavior,
+ *   David Flamand [dfffffff], https://gitlab.com/dfffffff/6809_undoc
  *
- *  -  Motorola 6809 and Hitachi 6309 Programmers Reference,
- *     2009 Darren Atkinson [darrena]
- *
- *  -  Undocumented 6809 Behaviours, David Banks [hoglet67]
- *     https://github.com/hoglet67/6809Decoder/wiki/Undocumented-6809-Behaviours
- *
- *  -  The Comprehensive Document of 6809 Undocumented and Undefined Behavior,
- *     David Flamand [dfffffff], https://gitlab.com/dfffffff/6809_undoc
- *
- *  -  6809 Exchange and Transfer Opcodes,
- *     http://tlindner.macmess.org/?p=945
+ * - 6809 Exchange and Transfer Opcodes, http://tlindner.macmess.org/?p=945
  */
 
 // Additionally, I quite early on made reference to MAME source to understand
@@ -476,27 +472,25 @@ static void mc6809_run(struct MC6809 *cpu) {
 				case 0xf: tmp1 = op_clr(cpu, tmp1); break; // CLR, CLRA, CLRB
 				default: break;
 				}
-				switch (op & 0xf) {
-				case 0xd: // TST
+				switch ((op >> 4) & 0xf) {
+				default:
+				case 0x0: case 0x6: case 0x7:
 					NVMA_CYCLE;
-					NVMA_CYCLE;
-					break;
-				default: // the rest need storing
-					switch ((op >> 4) & 0xf) {
-					default:
-					case 0x0: case 0x6: case 0x7:
+					if ((op & 0xf) == 0xd) {
+						// TST
 						NVMA_CYCLE;
+					} else {
 						store_byte(cpu, ea, tmp1);
-						break;
-					case 0x4:
-						REG_A = tmp1;
-						peek_byte(cpu, REG_PC);
-						break;
-					case 0x5:
-						REG_B = tmp1;
-						peek_byte(cpu, REG_PC);
-						break;
 					}
+					break;
+				case 0x4:
+					REG_A = tmp1;
+					peek_byte(cpu, REG_PC);
+					break;
+				case 0x5:
+					REG_B = tmp1;
+					peek_byte(cpu, REG_PC);
+					break;
 				}
 			} break;
 
@@ -761,41 +755,25 @@ static void mc6809_run(struct MC6809 *cpu) {
 					REG_PC += tmp;
 			} break;
 
-			// 0x30 LEAX indexed
-			// 0x1030 LEAX indexed, illegal
-			case 0x30:
-			case 0x0230:
-				REG_X = ea_indexed(cpu);
-				CLR_Z;
-				SET_Z16(REG_X);
-				NVMA_CYCLE;
-				break;
-
-			// 0x31 LEAY indexed
-			// 0x1031 LEAY indexed, illegal
-			case 0x31:
-			case 0x0231:
-				REG_Y = ea_indexed(cpu);
-				CLR_Z;
-				SET_Z16(REG_Y);
-				NVMA_CYCLE;
-				break;
-
-			// 0x32 LEAS indexed
-			// 0x1032 LEAS indexed, illegal
-			case 0x32:
-			case 0x0232:
-				REG_S = ea_indexed(cpu);
-				NVMA_CYCLE;
-				cpu->nmi_armed = 1;
-				break;
-
-			// 0x33 LEAU indexed
-			// 0x1033 LEAU indexed, illegal
-			case 0x33:
-			case 0x0233:
-				REG_U = ea_indexed(cpu);
-				NVMA_CYCLE;
+			// 0x30 LEAX, LEAY, LEAS, LEAU indexed
+			// 0x1030 LEAX, LEAY, LEAS, LEAU indexed, illegal
+			case 0x30: case 0x31: case 0x32: case 0x33:
+			case 0x2030: case 0x2031: case 0x2032: case 0x2033:
+				{
+					unsigned ea = ea_indexed(cpu);
+					if (!(op & 2)) {
+						CLR_Z;
+						SET_Z16(ea);
+					}
+					switch (op & 3) {
+					default:
+					case 0: REG_X = ea; break;
+					case 1: REG_Y = ea; break;
+					case 2: REG_S = ea; cpu->nmi_armed = 1; break;
+					case 3: REG_U = ea; break;
+					}
+					NVMA_CYCLE;
+				}
 				break;
 
 			// 0x34 PSHS immediate
@@ -1557,18 +1535,18 @@ static uint8_t op_xclr(struct MC6809 *cpu, uint8_t in) {
 // Debug interface
 
 static const struct debug_feature_field feature_type_cc_flags_fields[] = {
-	{ .name = "C", .start = 0, .end = 0, .type = &debug_feature_type_uint8 },
-	{ .name = "V", .start = 1, .end = 1, .type = &debug_feature_type_uint8 },
-	{ .name = "Z", .start = 2, .end = 2, .type = &debug_feature_type_uint8 },
-	{ .name = "N", .start = 3, .end = 3, .type = &debug_feature_type_uint8 },
-	{ .name = "I", .start = 4, .end = 4, .type = &debug_feature_type_uint8 },
-	{ .name = "H", .start = 5, .end = 5, .type = &debug_feature_type_uint8 },
-	{ .name = "F", .start = 6, .end = 6, .type = &debug_feature_type_uint8 },
-	{ .name = "E", .start = 7, .end = 7, .type = &debug_feature_type_uint8 },
+	{ .name = "E", .start = 7, .end = 7 },
+	{ .name = "F", .start = 6, .end = 6 },
+	{ .name = "H", .start = 5, .end = 5 },
+	{ .name = "I", .start = 4, .end = 4 },
+	{ .name = "N", .start = 3, .end = 3 },
+	{ .name = "Z", .start = 2, .end = 2 },
+	{ .name = "V", .start = 1, .end = 1 },
+	{ .name = "C", .start = 0, .end = 0 },
 };
 
 static const struct debug_feature_type feature_type_cc_flags = {
-	.type = debug_feature_base_type_struct,
+	.type = debug_feature_base_type_flags,
 	.id = "cc_flags",
 	.size = 1,
 	.as_struct = {

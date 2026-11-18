@@ -1097,6 +1097,43 @@ static void cmd_delete(struct sdc_fs *fs, struct sdc_hw *hw, const char *path) {
 	sdc_hw_succeed(hw);
 }
 
+/* R:old-path NUL new-leaf NUL. The destination stays in the source directory. */
+static void cmd_rename(struct sdc_fs *fs, struct sdc_hw *hw, const char *path) {
+ struct resolved src;
+ char dst[PATH_MAX], existing[PATH_MAX];
+ const uint8_t *end = memchr(hw->block + 2, 0, SDC_BLOCK_SIZE - 2);
+ const char *leaf;
+ char *slash;
+ int err;
+ size_t left;
+ if (!end || end >= hw->block + SDC_BLOCK_SIZE - 1) {
+  sdc_hw_fail(hw, SDC_ERR_INVALID); return;
+ }
+ leaf = (const char *)(end + 1);
+ left = (size_t)(hw->block + SDC_BLOCK_SIZE - (end + 1));
+ if (!memchr(leaf, 0, left) || !*leaf || strchr(leaf, '/') || strchr(leaf, '\\') ||
+     strchr(leaf, ':') || strchr(leaf, '*') || strchr(leaf, '?') ||
+     !strcmp(leaf, ".") || !strcmp(leaf, "..")) {
+  sdc_hw_fail(hw, SDC_ERR_INVALID); return;
+ }
+ err = resolve_path(fs, path, R_MUST_EXIST, &src);
+ if (err) { sdc_hw_fail(hw, (uint8_t)err); return; }
+ if (src.is_dir || file_in_use(fs, src.host, -1)) {
+  sdc_hw_fail(hw, SDC_ERR_INUSE); return;
+ }
+ snprintf(dst, sizeof(dst), "%s", src.host);
+ slash = strrchr(dst, '/');
+ if (!slash) { sdc_hw_fail(hw, SDC_ERR_INVALID); return; }
+ *slash = 0;
+ if (lookup_child(dst, leaf, 0, existing, sizeof(existing)) == 0) {
+  sdc_hw_fail(hw, SDC_ERR_INUSE); return;
+ }
+ if (join2(existing, sizeof(existing), dst, leaf) != 0 || rename(src.host, existing) != 0) {
+  sdc_hw_fail(hw, SDC_ERR_MISC); return;
+ }
+ sdc_hw_succeed(hw);
+}
+
 static void cmd_extd(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 	char letter;
 	char path[SDC_PATH_MAX];
@@ -1120,6 +1157,9 @@ static void cmd_extd(struct sdc_fs *fs, struct sdc_hw *hw, unsigned drive) {
 		break;
 	case 'K':
 		cmd_mkdir(fs, hw, path);
+		break;
+	case 'R':
+		cmd_rename(fs, hw, path);
 		break;
 	case 'X':
 		cmd_delete(fs, hw, path);

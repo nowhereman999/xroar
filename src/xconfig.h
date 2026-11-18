@@ -1,19 +1,15 @@
-/** \file
+/* Command-line and file-based configuration options.
  *
- *  \brief Command-line and file-based configuration options.
+ * Copyright 2009-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2009-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #ifndef XROAR_XCONFIG_H_
@@ -51,6 +47,7 @@ struct slist;
 #define XCO_OPT_NE(t,n,s,e,f) XCFO_OPT(t,n,s,e,XCONFIG_FLAG_CLI_NOESC)
 
 // Map xc_type to dispatch function member
+#define XC_FUNC_NONE func_null
 #define XC_FUNC_BOOL func_bool
 #define XC_FUNC_BOOL0 func_bool
 #define XC_FUNC_INT func_int
@@ -62,7 +59,6 @@ struct slist;
 #define XC_FUNC_STRING_NE func_string
 #define XC_FUNC_ASSIGN func_assign
 #define XC_FUNC_ASSIGN func_assign
-#define XC_FUNC_NONE func_null
 
 // Options with flags that call a handler
 #define XCF_CALL(t,n,f,d) XC_TNF(t,n,XCONFIG_FLAG_CALL|(f)), .dest.XC_FUNC_##t = (d)
@@ -73,6 +69,7 @@ struct slist;
 #define XC_CALL_REF(t,n,r,d) XC_CALL(t,n,d), .ref = (r)
 
 // Compatibility
+#define XC_SET_NONE(n) XC_OPT(NONE,n,NULL)
 #define XC_SET_BOOL(n,d) XC_OPT(BOOL,n,d)
 #define XC_SET_BOOL0(n,d) XC_OPT(BOOL0,n,d)
 #define XC_SET_INT(n,d) XC_OPT(INT,n,d)
@@ -85,7 +82,6 @@ struct slist;
 #define XC_SET_STRING_LIST(n,d) XC_OPT(STRING_LIST,n,d)
 #define XC_SET_STRING_NE(n,d) XC_OPT_NE(STRING,n,d)
 #define XC_SET_STRING_LIST_NE(n,d) XC_OPT_NE(STRING_LIST,n,d)
-#define XC_SET_NONE(n) XC_OPT(NONE,n,NULL)
 #define XC_SET_ENUM(n,d,r) XC_OPT_REF(ENUM,n,d,r)
 #define XC_SET_PART(n,d,r) XC_OPT_REF(PART,n,d,r)
 #define XC_ALIAS_NOARG(n,d) XC_OPT(ALIAS,n,d)
@@ -112,6 +108,7 @@ struct slist;
 #define XCO_ALIAS_ARG(n,s,m,r) XCO_OPT_REF(ALIAS,n,s,m,r)
 #define XCO_ALIAS_UARG(n,s,m) XCO_OPT(ALIAS1,n,s,m)
 
+#define XC_CALL_NONE(n,d) XC_CALL(NONE,n,d)
 #define XC_CALL_BOOL(n,d) XC_CALL(BOOL,n,d)
 #define XC_CALL_BOOL0(n,d) XC_CALL(BOOL0,n,d)
 #define XC_CALL_INT(n,d) XC_CALL(INT,n,d)
@@ -123,7 +120,6 @@ struct slist;
 #define XC_CALL_ASSIGN(n,d) XC_CALL(ASSIGN,n,d)
 #define XC_CALL_STRING_NE(n,d) XCF_CALL(STRING,n,XCONFIG_FLAG_CLI_NOESC,d)
 #define XC_CALL_ASSIGN_NE(n,d) XCF_CALL(ASSIGN,n,XCONFIG_FLAG_CLI_NOESC,d)
-#define XC_CALL_NONE(n,d) XC_CALL(NONE,n,d)
 
 #define XC_ENUM_INT(k,v,d) .name = (k), .value = (v), .description = (d)
 #define XC_ENUM_END() .name = NULL
@@ -145,7 +141,8 @@ enum xconfig_result {
 	XCONFIG_FILE_ERROR
 };
 
-enum xconfig_option_type {
+enum xconfig_type {
+	XCONFIG_NONE = 0,
 	XCONFIG_BOOL,
 	XCONFIG_BOOL0,  // unsets a BOOL
 	XCONFIG_INT,
@@ -157,7 +154,6 @@ enum xconfig_option_type {
 	XCONFIG_STRING,
 	XCONFIG_STRING_LIST,
 	XCONFIG_ASSIGN,
-	XCONFIG_NONE,
 	XCONFIG_ENUM,
 	XCONFIG_PART,
 	XCONFIG_ALIAS,  // alias with no user-supplied argument
@@ -173,7 +169,7 @@ typedef void (*xconfig_func_assign)(const char *, struct sdsx_list *);
 typedef void (*xconfig_func_null)(void);
 
 struct xconfig_option {
-	enum xconfig_option_type type;
+	enum xconfig_type type;
 	const char *name;
 	union {
 		void *object;

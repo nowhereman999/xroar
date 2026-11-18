@@ -1,19 +1,15 @@
-/** \file
+/* Dragon/CoCo cartridge support.
  *
- *  \brief Dragon/CoCo cartridge support.
+ * Copyright 2005-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2005-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -118,7 +114,7 @@ static uint8_t cart_rom_write(struct cart *c, uint16_t A, bool P2, bool R2, uint
 static void do_firq(void *);
 static bool cart_rom_has_interface(struct cart *c, const char *ifname);
 
-/**************************************************************************/
+// =========================================================================
 
 // The cartridge type heuristic basically just says "any image > 16K is
 // banked", so it assigns the "gmc" cart-type to handle that, else assumes
@@ -504,7 +500,7 @@ void cart_config_remove_all(void) {
 	rom_cart_config = NULL;
 }
 
-/* ---------------------------------------------------------------------- */
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 struct cart *cart_create_from_config(struct cart_config *cc) {
 	if (!cc) {
@@ -630,12 +626,20 @@ bool cart_rom_finish(struct part *p) {
 		if (cc->rom && !cc->rom2) {
 			sds tmp = romlist_find(cc->rom);
 			if (tmp) {
-				FILE *fd = fopen(tmp, "rb");
-				if (fd) {
-					off_t fsize = fs_file_size(fd);
+				off_t fsize = 0;
+				struct rom_builtin *builtin = rom_builtin_by_name(tmp);
+				if (builtin) {
+					fsize = *builtin->size;
+				} else {
+					FILE *fd = fopen(tmp, "rb");
+					if (fd) {
+						fsize = fs_file_size(fd);
+						fclose(fd);
+					}
+				}
+				if (fsize) {
 					slot_size = fsize > 0x40000 ? 0x40000 : fsize;
 					nslots = 1;
-					fclose(fd);
 				}
 				sdsfree(tmp);
 			}
@@ -673,7 +677,7 @@ void cart_rom_free(struct part *p) {
 	rombank_free(c->ROM);
 }
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+// =========================================================================
 
 /* ROM cart routines */
 

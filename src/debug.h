@@ -1,21 +1,18 @@
-/** \file
+/* Generic CPU debug interface.
  *
- *  \brief Generic CPU debug interface.
+ * Copyright 2021-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2021-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
- *
- *  Common to all CPUs, provides hooks for breakpoints and debugging with GDB.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* Common to all CPUs, provides hooks for breakpoints and debugging with GDB.
  */
 
 #ifndef XROAR_DEBUG_H_
@@ -128,9 +125,11 @@ struct debug_part {
 	DELEGATE_T1(uint32, int) get_register;  // regno, -> value
 	DELEGATE_T2(void, int, uint32) set_register;  // regno, value
 
+#ifdef WANT_GDB_TARGET
 	// Get/set composite registers; r, buffer_size, buffer
 	DELEGATE_T3(int, int, unsigned, uint8p) get_register_composite;
 	DELEGATE_T3(int, int, unsigned, cuint8p) set_register_composite;
+#endif
 };
 
 // A machine will create a debug target based on the primary architecture
@@ -174,7 +173,9 @@ void debug_target_add_part(struct debug_target *target, const char *name,
 
 // Generate an XML target description for GDB.
 
+#ifdef WANT_GDB_TARGET
 sds debug_target_xml(struct debug_target *target);
+#endif
 
 int debug_register_by_name(struct debug_target *target, const char *name);
 
@@ -197,11 +198,13 @@ uint32_t debug_get_register(struct debug_target *target, int regno);
 
 void debug_set_register(struct debug_target *target, int regno, uint32_t value);
 
+#ifdef WANT_GDB_TARGET
 int debug_get_register_composite(struct debug_target *target, int regno,
 				 unsigned nbytes, uint8_t *buf);
 
 int debug_set_register_composite(struct debug_target *target, int regno,
 				 unsigned nbytes, const uint8_t *buf);
+#endif
 
 #endif
 

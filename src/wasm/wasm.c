@@ -1,19 +1,15 @@
-/** \file
+/* WebAssembly (emscripten) support.
  *
- *  \brief WebAssembly (emscripten) support.
+ * Copyright 2019-2025 Ciaran Anscomb
  *
- *  \copyright Copyright 2019-2025 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -46,6 +42,7 @@
 #include "romlist.h"
 #include "vdisk.h"
 #include "vdrive.h"
+#include "wd279x.h"
 #include "xconfig.h"
 #include "xroar.h"
 
@@ -109,6 +106,7 @@ static void *ui_wasm_new(void *cfg) {
 	ui_messenger_join_group(uiwasm->msgr_client_id, ui_tag_tape_playing, MESSENGER_NOTIFY_DELEGATE(wasm_ui_state_notify, uiwasm));
 	ui_messenger_join_group(uiwasm->msgr_client_id, ui_tag_disk_data, MESSENGER_NOTIFY_DELEGATE(wasm_ui_state_notify, uiwasm));
 	ui_messenger_join_group(uiwasm->msgr_client_id, ui_tag_disk_drive_info, MESSENGER_NOTIFY_DELEGATE(wasm_ui_state_notify, uiwasm));
+	ui_messenger_join_group(uiwasm->msgr_client_id, ui_tag_fdc_status, MESSENGER_NOTIFY_DELEGATE(wasm_ui_state_notify, uiwasm));
 	ui_messenger_join_group(uiwasm->msgr_client_id, ui_tag_hd_filename, MESSENGER_NOTIFY_DELEGATE(wasm_ui_state_notify, uiwasm));
 	ui_messenger_join_group(uiwasm->msgr_client_id, ui_tag_fullscreen, MESSENGER_NOTIFY_DELEGATE(wasm_ui_state_notify, uiwasm));
 	ui_messenger_join_group(uiwasm->msgr_client_id, ui_tag_cmp_fs, MESSENGER_NOTIFY_DELEGATE(wasm_ui_state_notify, uiwasm));
@@ -314,6 +312,25 @@ static void wasm_ui_state_notify(void *sptr, int tag, void *smsg) {
 			char string[16];
 			snprintf(string, sizeof(string), "Dr %01u Tr %02u He %01u", d, c, h);
 			EM_ASM_({ ui_set_html($0, $1); }, "drive_info", string);
+			// Also report the drive separately, so a status bar can
+			// combine it with the sector from ui_tag_fdc_status.
+			// Guarded: older host pages do not define this.
+			EM_ASM_({
+				if (typeof ui_fdc_drive === 'function')
+					ui_fdc_drive($0, $1, $2);
+			}, vi->drive, c, h);
+		}
+		break;
+
+	case ui_tag_fdc_status:
+		{
+			const struct wd279x_status *st = data;
+			// Guarded: a host page that predates the status bar
+			// simply ignores this, rather than throwing.
+			EM_ASM_({
+				if (typeof ui_fdc_status === 'function')
+					ui_fdc_status($0, $1, $2, $3);
+			}, st->active, st->track, st->sector, st->side);
 		}
 		break;
 
@@ -1001,4 +1018,10 @@ void wasm_new_disk(int drive) {
 
 void wasm_vdrive_flush(void) {
 	vdrive_flush(xroar.vdrive_interface);
+}
+
+// Return package version
+
+char *wasm_package_version(void) {
+	return PACKAGE_VERSION;
 }

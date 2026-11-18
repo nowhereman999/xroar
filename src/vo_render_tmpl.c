@@ -1,23 +1,20 @@
-/** \file
+/* Video renderer generic operations.
  *
- *  \brief Video renderer generic operations.
+ * Copyright 2003-2023 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2023 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
- *
- *  This file contains templates of generic scanline rendering routines.  It is
- *  included into vo_render.c multiple times to define a set of renderers
- *  handling pixels of different types.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* This file contains templates of generic scanline rendering routines.  It is
+ * included into vo_render.c multiple times to define a set of renderers
+ * handling pixels of different types.
  */
 
 // Before including this file, define:
@@ -79,8 +76,8 @@ static void TNAME(render_cmp_2bit)(void *sptr, unsigned burstn,
 				   unsigned npixels, uint8_t const *data);
 static void TNAME(render_cmp_5bit)(void *sptr, unsigned burstn,
 				   unsigned npixels, uint8_t const *data);
-static void TNAME(finish_frame)(struct vo_render *vr);
 static void TNAME(next_line)(struct vo_render *vr, unsigned npixels);
+static void TNAME(finish_frame)(struct vo_render *vr);
 static void TNAME(line_to_rgb)(struct vo_render *vr, int lno, uint8_t *dest);
 
 // Create an instance of the renderer for this basic type using the specified
@@ -98,8 +95,8 @@ struct vo_render *TNAME(renderer_new)(TNAME(map_rgb_func) map_rgb, TNAME(unmap_r
 	vr->render_rgb_palette = TNAME(render_rgb_palette);
 	vr->render_cmp_2bit = TNAME(render_cmp_2bit);
 	vr->render_cmp_5bit = TNAME(render_cmp_5bit);
-	vr->finish_frame = TNAME(finish_frame);
 	vr->next_line = TNAME(next_line);
+	vr->finish_frame = TNAME(finish_frame);
 	vr->line_to_rgb = TNAME(line_to_rgb);
 
 	return vr;
@@ -322,9 +319,19 @@ static void TNAME(render_cmp_5bit)(void *sptr, unsigned burstn, unsigned npixels
 	vr->scanline++;
 }
 
-// A viewport can extend below the last scanline of a field (notably NTSC
-// action/underscan). Those rows otherwise retain a previous field's pixels.
-// Use the pixel-format mapper so black remains opaque in alpha formats.
+// Advance pixel pointer to next line in buffer; update current time 't'
+
+static void TNAME(next_line)(struct vo_render *vr, unsigned npixels) {
+	vr->pixel = (VR_PTYPE *)vr->pixel + vr->buffer_pitch;
+	vr->t = (vr->t + npixels) % vr->tmax;
+	vr->scanline++;
+}
+
+// A viewport can extend below the last scanline of a frame (notably NTSC
+// action/underscan).  Those rows may otherwise retain a previous frame's
+// pixels (e.g. after transition from 50Hz to 60Hz).  Clear any lines remaining
+// in the viewport.
+
 static void TNAME(finish_frame)(struct vo_render *vr) {
 	if (!vr->buffer || !vr->pixel || vr->buffer_pitch <= 0)
 		return;
@@ -337,14 +344,6 @@ static void TNAME(finish_frame)(struct vo_render *vr) {
 			dest[x] = black;
 		dest += vr->buffer_pitch;
 	}
-}
-
-// Advance pixel pointer to next line in buffer; update current time 't'
-
-static void TNAME(next_line)(struct vo_render *vr, unsigned npixels) {
-	vr->pixel = (VR_PTYPE *)vr->pixel + vr->buffer_pitch;
-	vr->t = (vr->t + npixels) % vr->tmax;
-	vr->scanline++;
 }
 
 static void TNAME(line_to_rgb)(struct vo_render *vr, int lno, uint8_t *dest) {

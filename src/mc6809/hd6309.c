@@ -1,40 +1,36 @@
-/** \file
+/* Hitach HD6309 CPU.
  *
- *  \brief Hitach HD6309 CPU.
+ * Copyright 2012-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2012-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* A drop-in replacement for the MC6809, this Hitachi CMOS version of the CPU
+ * includes many instruction set enhancements.
  *
- *  See COPYING.GPL for redistribution conditions.
+ * Sources
  *
- *  \endlicenseblock
+ * - MC6809E data sheet, Motorola
  *
- *  A drop-in replacement for the MC6809, this Hitachi CMOS version of the CPU
- *  includes many instruction set enhancements.
+ * - HD6309E data sheet, Hitachi
  *
- *  \par Sources
+ * - MC6809 Cycle-By-Cycle Performance,
+ *   http://atjs.great-site.net/mc6809/Information/6809cyc.txt
  *
- *  - MC6809E data sheet, Motorola
+ * - Motorola 6809 and Hitachi 6309 Programmers Reference, 2009 Darren Atkinson
  *
- *  - HD6309E data sheet, Hitachi
+ * - Undocumented 6309 Behaviours, David Banks [hoglet67],
+ *   https://github.com/hoglet67/6809Decoder/wiki/Undocumented-6309-Behaviours
  *
- *  - MC6809 Cycle-By-Cycle Performance,
- *    http://atjs.great-site.net/mc6809/Information/6809cyc.txt
- *
- *  - Motorola 6809 and Hitachi 6309 Programmers Reference,
- *    2009 Darren Atkinson
- *
- *  - Undocumented 6309 Behaviours, David Banks [hoglet67]
- *    https://github.com/hoglet67/6809Decoder/wiki/Undocumented-6309-Behaviours
- *
- *  - Tim Lindner's Hitachi 6309 Fuzzing Project
- *    https://github.com/tlindner/Fuzz6309
+ * - Tim Lindner's Hitachi 6309 Fuzzing Project,
+ *   https://github.com/tlindner/Fuzz6309
  */
 
 #include "top-config.h"
@@ -530,32 +526,29 @@ static void hd6309_run(struct MC6809 *cpu) {
 				case 0xf: tmp1 = op_clr(cpu, tmp1); break; // CLR, CLRA, CLRB
 				default: break;
 				}
-				switch (op & 0xf) {
-				case 0xd: // TST
+				switch ((op >> 4) & 0xf) {
+				default:
+				case 0x0: case 0x6: case 0x7:
+					REG_M = tmp1;  // [hoglet67]
 					NVMA_CYCLE;
-					if (!NATIVE_MODE)
-						NVMA_CYCLE;
-					// XXX does the result end up in M for TST?
-					break;
-				default: // the rest need storing
-					switch ((op >> 4) & 0xf) {
-					default:
-					case 0x0: case 0x6: case 0x7:
-						NVMA_CYCLE;
-						REG_M = tmp1;  // [hoglet67]
+					if ((op & 0xf) == 0xd) {
+						// TST
+						if (!NATIVE_MODE)
+							NVMA_CYCLE;
+					} else {
 						store_byte(cpu, ea, tmp1);
-						break;
-					case 0x4:
-						REG_A = tmp1;
-						if (!NATIVE_MODE)
-							peek_byte(cpu, REG_PC);
-						break;
-					case 0x5:
-						REG_B = tmp1;
-						if (!NATIVE_MODE)
-							peek_byte(cpu, REG_PC);
-						break;
 					}
+					break;
+				case 0x4:
+					REG_A = tmp1;
+					if (!NATIVE_MODE)
+						peek_byte(cpu, REG_PC);
+					break;
+				case 0x5:
+					REG_B = tmp1;
+					if (!NATIVE_MODE)
+						peek_byte(cpu, REG_PC);
+					break;
 				}
 			} break;
 
@@ -641,7 +634,10 @@ static void hd6309_run(struct MC6809 *cpu) {
 				continue;
 
 			// 0x12 NOP inherent
-			case 0x12: peek_byte(cpu, REG_PC); break;
+			case 0x12:
+				if (!NATIVE_MODE)
+					peek_byte(cpu, REG_PC);
+				break;
 
 			// 0x13 SYNC inherent
 			// TODO: "There appears to be a bug with SYNC in native
@@ -694,7 +690,8 @@ static void hd6309_run(struct MC6809 *cpu) {
 				// TODO: behaviour for illegal input differs on
 				// the 6309 [hoglet67]
 				REG_A = op_daa(cpu, REG_A);
-				peek_byte(cpu, REG_PC);
+				if (!NATIVE_MODE)
+					peek_byte(cpu, REG_PC);
 				break;
 
 			// 0x1a ORCC immediate
@@ -702,7 +699,8 @@ static void hd6309_run(struct MC6809 *cpu) {
 				unsigned data;
 				data = byte_immediate(cpu);
 				REG_CC |= data;
-				peek_byte(cpu, REG_PC);
+				if (!NATIVE_MODE)
+					peek_byte(cpu, REG_PC);
 			} break;
 
 			// 0x1c ANDCC immediate
@@ -710,7 +708,8 @@ static void hd6309_run(struct MC6809 *cpu) {
 				unsigned data;
 				data = byte_immediate(cpu);
 				REG_CC &= data;
-				peek_byte(cpu, REG_PC);
+				if (!NATIVE_MODE)
+					peek_byte(cpu, REG_PC);
 			} break;
 
 			// 0x1d SEX inherent
@@ -846,33 +845,23 @@ static void hd6309_run(struct MC6809 *cpu) {
 					REG_PC += tmp;
 			} break;
 
-			// 0x30 LEAX indexed
-			case 0x30:
-				REG_X = ea_indexed(cpu);
-				CLR_Z;
-				SET_Z16(REG_X);
-				NVMA_CYCLE;
-				break;
-
-			// 0x31 LEAY indexed
-			case 0x31:
-				REG_Y = ea_indexed(cpu);
-				CLR_Z;
-				SET_Z16(REG_Y);
-				NVMA_CYCLE;
-				break;
-
-			// 0x32 LEAS indexed
-			case 0x32:
-				REG_S = ea_indexed(cpu);
-				NVMA_CYCLE;
-				cpu->nmi_armed = 1;
-				break;
-
-			// 0x33 LEAU indexed
-			case 0x33:
-				REG_U = ea_indexed(cpu);
-				NVMA_CYCLE;
+			// 0x30 LEAX, LEAY, LEAS, LEAU indexed
+			case 0x30: case 0x31: case 0x32: case 0x33:
+				{
+					unsigned ea = ea_indexed(cpu);
+					if (!(op & 2)) {
+						CLR_Z;
+						SET_Z16(ea);
+					}
+					switch (op & 3) {
+					default:
+					case 0: REG_X = ea; break;
+					case 1: REG_Y = ea; break;
+					case 2: REG_S = ea; cpu->nmi_armed = 1; break;
+					case 3: REG_U = ea; break;
+					}
+					NVMA_CYCLE;
+				}
 				break;
 
 			// 0x34 PSHS immediate
@@ -955,7 +944,8 @@ static void hd6309_run(struct MC6809 *cpu) {
 
 			// 0x39 RTS inherent
 			case 0x39:
-				peek_byte(cpu, REG_PC);
+				if (!NATIVE_MODE)
+					peek_byte(cpu, REG_PC);
 				REG_PC = pull_s_word(cpu);
 				NVMA_CYCLE;
 				break;
@@ -963,9 +953,10 @@ static void hd6309_run(struct MC6809 *cpu) {
 			// 0x3a ABX inherent
 			case 0x3a:
 				REG_X += REG_B;
-				peek_byte(cpu, REG_PC);
-				if (!NATIVE_MODE)
+				if (!NATIVE_MODE) {
+					peek_byte(cpu, REG_PC);
 					NVMA_CYCLE;
+				}
 				break;
 
 			// 0x3b RTI inherent
@@ -2196,14 +2187,14 @@ static void instruction_posthook(struct MC6809 *cpu) {
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static struct debug_feature_field feature_type_md_flags_fields[] = {
-	{ .name = "NM", .start = 0, .end = 0, .type = &debug_feature_type_uint8 },
-	{ .name = "FM", .start = 1, .end = 1, .type = &debug_feature_type_uint8 },
-	{ .name = "IL", .start = 6, .end = 6, .type = &debug_feature_type_uint8 },
-	{ .name = "D0", .start = 7, .end = 7, .type = &debug_feature_type_uint8 },
+	{ .name = "D0", .start = 7, .end = 7 },
+	{ .name = "IL", .start = 6, .end = 6 },
+	{ .name = "FM", .start = 1, .end = 1 },
+	{ .name = "NM", .start = 0, .end = 0 },
 };
 
 static const struct debug_feature_type feature_type_md_flags = {
-	.type = debug_feature_base_type_struct,
+	.type = debug_feature_base_type_flags,
 	.id = "md_flags",
 	.size = 1,
 	.as_struct = {

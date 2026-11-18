@@ -1,19 +1,15 @@
-/** \file
+/* GDB protocol support.
  *
- *  \brief GDB protocol support.
+ * Copyright 2013-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2013-2021 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #ifndef XROAR_GDB_H_
@@ -35,10 +31,20 @@ struct gdb_interface;
 struct gdb_interface *gdb_interface_new(const char *hostname, const char *portname, struct machine *m);
 void gdb_interface_free(struct gdb_interface *gi);
 
+// Lock the run_state mutex and return true if ready to run.
+
 int gdb_run_lock(struct gdb_interface *gi);
+
+// Unlock the run_state mutex.
+
 void gdb_run_unlock(struct gdb_interface *gi);
+
+// Called by machine after receiving a signal.
+
 void gdb_stop(struct gdb_interface *gi, int sig);
+
+// Called by machine to acknowledge single-step.
+
 void gdb_single_step(struct gdb_interface *gi);
-bool gdb_signal_lock(struct gdb_interface *gi, int sig);
 
 #endif

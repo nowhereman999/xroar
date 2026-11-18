@@ -2,11 +2,11 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([xroar],[1.13.0.dev])
+AC_INIT([xroar],[1.13.1])
 AM_INIT_AUTOMAKE([foreign])
 AM_SILENT_RULES([yes])
 
-MANPAGE_DATE="July 2026"
+MANPAGE_DATE="November 2026"
 AC_SUBST(MANPAGE_DATE)
 
 AC_CONFIG_SRCDIR([src/xroar.c])
@@ -33,7 +33,7 @@ AC_CHECK_TOOL(RC, windres, :)
 # Checks for libraries.
 
 # Checks for header files.
-AC_CHECK_HEADERS([endian.h regex.h])
+AC_CHECK_HEADERS([endian.h regex.h signal.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_TYPE_INT16_T
@@ -67,24 +67,16 @@ AC_PATH_XTRA
 
 ### Options
 
-_machine_arch_default="yes"
-
 AC_ARG_ENABLE([snapshot],[])
 
 AC_ARG_ENABLE([dragon],
 	AS_HELP_STRING([--enable-dragon], [support Dragon and Tandy CoCo 1/2]) )
-test "x$enable_dragon" = "xyes" && _machine_arch_default="no"
 
 AC_ARG_ENABLE([coco3],
 	AS_HELP_STRING([--enable-coco3], [support Tandy CoCo 3]) )
-test "x$enable_coco3" = "xyes" && _machine_arch_default="no"
 
 AC_ARG_ENABLE([mc10],
 	AS_HELP_STRING([--enable-mc10], [support Tandy MC-10]) )
-test "x$enable_mc10" = "xyes" && _machine_arch_default="no"
-
-AC_ARG_ENABLE([experimental],
-	AS_HELP_STRING([--enable-experimental], [include experimental/incomplete code]) )
 
 AC_ARG_ENABLE([wasm],
 	AS_HELP_STRING([--enable-wasm], [build for WebAssembly using emscripten]) )
@@ -95,12 +87,8 @@ AC_ARG_WITH([gtk3],
 AC_ARG_WITH([gtk2],
 	AS_HELP_STRING([--without-gtk2], [don't test for GTK+ 2]) )
 
-test "x$with_gtk3" = "xyes" && with_gtk2="no"
-test "x$with_gtk2" = "xyes" && with_gtk3="no"
-
 AC_ARG_WITH([gtkgl],
 	AS_HELP_STRING([--without-gtkgl], [don't test for GtkGLExt]) )
-test "x$with_gtk2" = "xno" && with_gtkgl=no
 
 AC_ARG_WITH([sdl3],
 	AS_HELP_STRING([--without-sdl3], [don't test for SDL3]) )
@@ -108,11 +96,11 @@ AC_ARG_WITH([sdl3],
 AC_ARG_WITH([sdl2],
 	AS_HELP_STRING([--without-sdl2], [don't test for SDL2]) )
 
-test "x$with_sdl3" = "xyes" && with_sdl2="no"
-test "x$with_sdl2" = "xyes" && with_sdl3="no"
-
 AC_ARG_ENABLE([ui_sdl],
 	AS_HELP_STRING([--enable-ui-sdl], [force inclusion of basic SDL UI]) )
+
+AC_ARG_WITH([opengl],
+	AS_HELP_STRING([--without-opengl], [don't test for OpenGL]) )
 
 AC_ARG_WITH([cocoa],
 	AS_HELP_STRING([--without-cocoa], [don't test for Mac OS X Cocoa]) )
@@ -168,7 +156,6 @@ AC_ARG_WITH([joydev],
 
 AC_ARG_WITH([sndfile],
 	AS_HELP_STRING([--with-sndfile], [test for libsndfile]) )
-test "x$with_sndfile" = "xyes" && with_sndfile="no"
 
 AC_ARG_WITH([tre],
 	AS_HELP_STRING([--with-tre], [test for TRE]) )
@@ -197,9 +184,43 @@ AC_ARG_ENABLE([traps],
 AC_ARG_ENABLE([gdb_target],
 	AS_HELP_STRING([--disable-gdb-target], [don't include GDB target (requires pthreads)]) )
 
-unset with_opengl
+AC_ARG_ENABLE([experimental],
+	AS_HELP_STRING([--enable-experimental], [include experimental/incomplete code]) )
 
 #'
+
+### Option precedence
+
+# If any specific machine is specified, don't default to all of them
+
+_machine_arch_default="yes"
+test "x$enable_dragon" = "xyes" && _machine_arch_default="no"
+test "x$enable_coco3" = "xyes" && _machine_arch_default="no"
+test "x$enable_mc10" = "xyes" && _machine_arch_default="no"
+
+# GTK+ versions cannot coexist
+
+test "x$with_gtk3" = "xyes" && with_gtk2="no"
+test "x$with_gtk2" = "xyes" && with_gtk3="no"
+
+# GtkGLExt depends on GTK+2 and OpenGL
+
+test "x$with_gtk2" = "xno" && with_gtkgl=no
+test "x$with_opengl" = "xno" && with_gtkgl=no
+
+# SDL versions cannot coexist
+
+test "x$with_sdl3" = "xyes" && with_sdl2="no"
+test "x$with_sdl2" = "xyes" && with_sdl3="no"
+
+# Cocoa UI depends on SDL2 for now
+
+test "x$with_sdl2" = "xno" && with_cocoa=no
+
+# Disable libsndfile unless explicitly requested.  Will use internal WAV-only
+# equivalent by default.
+
+test "x$with_sndfile" = "xyes" && with_sndfile="no"
 
 ### Optional emulated hardware
 

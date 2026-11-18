@@ -1,19 +1,15 @@
-/** \file
+/* GTK+ 2 printer control window.
  *
- *  \brief GTK+ 2 printer control window.
+ * Copyright 2024-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2024-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -67,10 +63,13 @@ static void pc_ui_state_notify(void *sptr, int tag, void *smsg);
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+static void gtk2_pc_dialog_free(void *sptr);
+
 // Create dialog window
 
 struct uigtk2_dialog *gtk2_pc_dialog_new(struct ui_gtk2_interface *uigtk2) {
 	struct uigtk2_dialog *dlg = uigtk2_dialog_new(uigtk2, "/uk/org/6809/xroar/gtk2/printercontrol.ui", "pc_window", ui_tag_print_dialog);
+	dlg->free = DELEGATE_AS0(void, gtk2_pc_dialog_free, dlg);
 
 	// Join each UI group we're interested in
 	ui_messenger_join_group(dlg->msgr_client_id, ui_tag_print_destination, MESSENGER_NOTIFY_DELEGATE(pc_ui_state_notify, uigtk2));
@@ -101,6 +100,14 @@ struct uigtk2_dialog *gtk2_pc_dialog_new(struct ui_gtk2_interface *uigtk2) {
 #endif
 
 	return dlg;
+}
+
+// Free dialog window
+
+static void gtk2_pc_dialog_free(void *sptr) {
+	struct uigtk2_dialog *dlg = sptr;
+	struct ui_gtk2_interface *uigtk2 = dlg->uigtk2;
+	free(uigtk2->printer.pipe);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

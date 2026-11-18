@@ -1,19 +1,15 @@
-/** \file
+/* XRoar initialisation and top-level emulator functions.
  *
- *  \brief XRoar initialisation and top-level emulator functions.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2025 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #ifndef XROAR_XROAR_H_
@@ -24,6 +20,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "trap.h"
 #include "ui.h"
 #include "xconfig.h"
 
@@ -101,6 +98,9 @@ struct xroar_cfg {
 		struct slist *bind_list;
 	} kbd;
 
+	// Optional inherited full-duplex socket for the CoCo 3 serial jack.
+	int serial_fd;
+
 	// Becker port
 	struct {
 		bool prefer;
@@ -143,6 +143,10 @@ struct xroar_cfg {
 		char *gdb_ip;
 		char *gdb_port;
 		bool gdb_pseudo_regs;
+		bool gdb_flags_as_struct;
+#ifdef WANT_TRAPS
+		struct trap_def trap_def;
+#endif
 	} debug;
 };
 
@@ -188,38 +192,30 @@ extern struct xroar xroar;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-// XXX
-//
-// consider splitting this up into bits.  can i have a final init part that
-// works through a state machine and we keep calling it until the return value
-// is zero ("done")?  that way wasm can wait until things are ready...
-
-/// Configure XRoar, initialise modules and start machine.
+// Configure XRoar, initialise modules and start machine.
 struct ui_interface *xroar_init(int argc, char **argv);
 
-/// Finish initialisation (sets first machine options, attaches media).
+// Finish initialisation (sets first machine options, attaches media).
 void xroar_init_finish(void);
 
-/// Cleanly shut down before program exit.
+// Cleanly shut down before program exit.
 void xroar_shutdown(void);
 
 #ifdef AUTOSAVE_PREFIX
-/// Save configuration to known location.
+// Save configuration to known location.
 void xroar_save_config_file(void);
 #endif
 
-/// Process UI event queue and run emulated machine.
+// Process UI event queue and run emulated machine.
 void xroar_run(int ncycles);
 
 int xroar_filetype_by_ext(const char *filename);
 void xroar_load_file_by_type(const char *filename, int autorun);
 void xroar_load_disk(const char *filename, int drive, bool autorun);
 
-/* Scheduled shutdown */
+// Helper functions
 struct xroar_timeout *xroar_set_timeout(char const *timestring);
-void xroar_cancel_timeout(struct xroar_timeout *);
-
-/* Helper functions */
+void xroar_cancel_timeout(struct xroar_timeout *timeout);
 void xroar_set_trace(int mode, unsigned n);
 void xroar_new_disk(int drive);
 void xroar_insert_disk_file(int drive, const char *filename);
@@ -247,7 +243,7 @@ void xroar_hard_reset(void);
 void xroar_soft_reset(void);
 void xroar_screenshot(void);
 
-/* Helper functions for config printing */
+// Helper functions for config printing
 void xroar_cfg_print_inc_indent(void);
 void xroar_cfg_print_dec_indent(void);
 void xroar_cfg_print_indent(FILE *f);

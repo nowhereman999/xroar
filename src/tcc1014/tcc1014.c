@@ -1,23 +1,21 @@
-/** \file
+/* TCC1014 (GIME) support.
  *
- *  \brief TCC1014 (GIME) support.
+ * Copyright 2019-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2019-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* Sources
  *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
- *
- *  \par Sources
- *  Sock's GIME register reference [sockgime]
- *  https://www.6809.org.uk/sock/gime.html
+ * - Sock's GIME register reference [sockgime],
+ *   https://www.6809.org.uk/sock/gime.html
  */
 
 #include "top-config.h"
@@ -59,7 +57,6 @@ enum vdg_render_mode {
 	TCC1014_RENDER_SG,
 	TCC1014_RENDER_CG,
 	TCC1014_RENDER_RG,
-	TCC1014_RENDER_RG2,
 };
 
 // GIME variant constants
@@ -557,9 +554,11 @@ static const struct debug_feature tcc1014_feature;
 static const struct debug_feature *features[] = { &tcc1014_feature };
 static uint32_t tcc1014_get_register(void *sptr, int n);
 static void tcc1014_set_register(void *sptr, int n, uint32_t v);
+#ifdef WANT_GDB_TARGET
 static int tcc1014_get_register_composite(void *sptr, int n, unsigned dsize, uint8_t *dest);
 static int tcc1014_set_register_composite(void *sptr, int n, unsigned ssize,
 					  const uint8_t *src);
+#endif
 
 static struct part *tcc1014_allocate(void) {
 	struct TCC1014_private *gime = part_new(sizeof(*gime));
@@ -583,8 +582,10 @@ static struct part *tcc1014_allocate(void) {
 	gime->public.debug.part.feature = features;
 	gime->public.debug.part.get_register = DELEGATE_AS1(uint32, int, tcc1014_get_register, gime);
 	gime->public.debug.part.set_register = DELEGATE_AS2(void, int, uint32, tcc1014_set_register, gime);
+#ifdef WANT_GDB_TARGET
 	gime->public.debug.part.get_register_composite = DELEGATE_AS3(int, int, unsigned, uint8p, tcc1014_get_register_composite, gime);
 	gime->public.debug.part.set_register_composite = DELEGATE_AS3(int, int, unsigned, cuint8p, tcc1014_set_register_composite, gime);
+#endif
 
 	return p;
 }
@@ -1334,8 +1335,6 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 				if (gime->VDG.GM0) {
 					if (gime->resolution || (gime->PIA1B_shadow.pdr & 0x70) == 0x70) {
 						render_mode = TCC1014_RENDER_RG;
-					} else {
-						render_mode = TCC1014_RENDER_RG2;
 					}
 				} else {
 					render_mode = TCC1014_RENDER_CG;
@@ -1429,11 +1428,6 @@ static void render_scanline(struct TCC1014_private *gime, event_ticks t) {
 					c1 = gime->palette_reg[(gdata&0x40) ? fg_colour : bg_colour];
 					c2 = gime->palette_reg[(gdata&0x20) ? fg_colour : bg_colour];
 					c3 = gime->palette_reg[(gdata&0x10) ? fg_colour : bg_colour];
-					gdata <<= 4;
-					break;
-				case TCC1014_RENDER_RG2:
-					c0 = c1 = gime->palette_reg[(gdata&0x40) ? fg_colour : bg_colour];
-					c2 = c3 = gime->palette_reg[(gdata&0x10) ? fg_colour : bg_colour];
 					gdata <<= 4;
 					break;
 				}
@@ -1900,6 +1894,8 @@ static void tcc1014_set_register(void *sptr, int n, uint32_t v) {
 	}
 }
 
+#ifdef WANT_GDB_TARGET
+
 static int tcc1014_get_register_composite(void *sptr, int n, unsigned dsize, uint8_t *dest) {
 	struct TCC1014_private *gime = sptr;
 
@@ -1956,3 +1952,5 @@ static int tcc1014_set_register_composite(void *sptr, int n, unsigned ssize,
 
 	}
 }
+
+#endif

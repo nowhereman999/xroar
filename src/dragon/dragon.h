@@ -1,19 +1,15 @@
-/** \file
+/* Dragon and Tandy Colour Computer machines.
  *
- *  \brief Dragon and Tandy Colour Computer machines.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #ifndef XROAR_DRAGON_DRAGON_H_
@@ -115,10 +111,6 @@ struct dragon {
 	int msgr_client_id;
 
 	// Useful configuration side-effect tracking
-	bool has_bas, has_extbas, has_altbas, has_combined;
-	bool has_ext_charset;
-	uint32_t crc_bas, crc_extbas, crc_altbas, crc_combined;
-	uint32_t crc_ext_charset;
 	bool is_dragon;
 	bool unexpanded_dragon32;
 	bool relaxed_pia0_decode;

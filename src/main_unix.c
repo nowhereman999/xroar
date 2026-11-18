@@ -1,19 +1,15 @@
-/** \file
+/* main() function.
  *
- *  \brief main() function.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2024 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -22,6 +18,10 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef HAVE_SIGNAL_H
+#include <signal.h>
+#endif
 
 #ifdef UI_SDL3
 #include <SDL3/SDL_main.h>
@@ -34,7 +34,43 @@
 
 #include "wasm/wasm.h"
 
-/** \brief Entry point.
+#ifdef HAVE_SIGNAL_H
+#ifndef HAVE_WASM
+
+/* Signal handler.
+ *
+ * For UIs that do not provide their own run(), we trap SIGTERM and SIGINT to
+ * point to this signal handler, which will set the shutdown flag, terminating
+ * the controlling while loop.
+ *
+ * We don't do this for other UIs, as toolkits may have cleaner (to them) ways
+ * of dealing with OS signals.
+ */
+
+static bool shutdown = 0;
+
+static void handle_signal(int sig) {
+	switch (sig) {
+	case SIGTERM:
+	case SIGINT:
+		shutdown = 1;
+		break;
+
+#ifdef SIGHUP
+	case SIGHUP:
+		signal(SIGHUP, handle_signal);
+		break;
+#endif
+
+	default:
+		break;
+	}
+}
+
+#endif
+#endif
+
+/* Entry point.
  *
  * Sets up the exit handler and calls xroar_init(), which will process all
  * configuration and return a UI interface.
@@ -65,9 +101,18 @@ int main(int argc, char **argv) {
 	if (DELEGATE_DEFINED(ui->run)) {
 		DELEGATE_CALL(ui->run);
 	} else {
-		for (;;) {
+#ifdef HAVE_SIGNAL_H
+		// Intercept signals to shutdown emulator
+		signal(SIGTERM, handle_signal);
+		signal(SIGINT, handle_signal);
+#ifdef SIGHUP
+		signal(SIGHUP, handle_signal);
+#endif
+#endif
+		while (!shutdown) {
 			xroar_run(EVENT_MS(10));
 		}
+		xroar_shutdown();
 	}
 #else
 	// The WebAssembly build has its own approach to completing

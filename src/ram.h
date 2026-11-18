@@ -1,21 +1,18 @@
-/** \file
+/* RAM.
  *
- *  \brief RAM.
+ * Copyright 2024-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2024 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
- *
- * Usage:
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* Usage:
  *
  * Create part "RAM" with (struct ram_config *) passed for options, defining
  * data width and how rows & columns are organised.
@@ -151,5 +148,7 @@ inline void ram_d16(struct ram *ram, bool RnW, unsigned bank,
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 unsigned ram_report(struct ram *ram, const char *par, const char *name);
+void ram_dump_bank(struct ram *ram, unsigned bank, FILE *fd);
+void ram_dump(struct ram *ram, FILE *fd);
 
 #endif

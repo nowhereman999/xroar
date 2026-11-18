@@ -1,19 +1,15 @@
-/** \file
+/* GTK+ 2 user-interface module.
  *
- *  \brief GTK+ 2 user-interface module.
+ * Copyright 2010-2024 Ciaran Anscomb
  *
- *  \copyright Copyright 2010-2024 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -23,6 +19,15 @@
 
 #include <assert.h>
 #include <stdlib.h>
+
+#ifdef HAVE_SIGNAL_H
+#include <glib.h>
+#include <signal.h>
+#ifdef G_OS_UNIX
+#include <glib-unix.h>
+#define USE_SIGNAL_HANDLER
+#endif
+#endif
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -87,6 +92,10 @@ struct ui_module ui_gtk2_module = {
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+#ifdef USE_SIGNAL_HANDLER
+static gboolean handle_os_signal(gpointer sptr);
+#endif
 
 // Dynamic menus
 
@@ -306,6 +315,11 @@ static void *ui_gtk2_new(void *cfg) {
 	struct ui_gtk2_interface *uigtk2 = g_malloc(sizeof(*uigtk2));
 	*uigtk2 = (struct ui_gtk2_interface){0};
 	struct ui_interface *ui = &uigtk2->public;
+
+#ifdef USE_SIGNAL_HANDLER
+	g_unix_signal_add(SIGHUP, (GSourceFunc)handle_os_signal, uigtk2);
+	g_unix_signal_add(SIGINT, (GSourceFunc)handle_os_signal, uigtk2);
+#endif
 
 	uigtk2->builder = gtk_builder_new();
 	uigtk2_add_from_resource(uigtk2, "/uk/org/6809/xroar/gtk2/application.ui");
@@ -751,6 +765,16 @@ static void gtk2_update_joystick_menus(void *sptr) {
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 // Callbacks
+
+// Signal handler
+
+#ifdef USE_SIGNAL_HANDLER
+static gboolean handle_os_signal(gpointer sptr) {
+	(void)sptr;
+	xroar_shutdown();
+	return 0;
+}
+#endif
 
 // File menu callbacks
 

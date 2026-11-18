@@ -1,19 +1,15 @@
-/** \file
+/* ROM bank support.
  *
- *  \brief ROM bank support.
+ * Copyright 2024-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2024-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -32,7 +28,6 @@
 #include "xalloc.h"
 
 #include "crc32.h"
-#include "crclist.h"
 #include "fs.h"
 #include "logging.h"
 #include "rom.h"
@@ -118,8 +113,12 @@ void rombank_report(struct rombank *rb, const char *par, const char *name) {
 		}
 		LOG_PRINT("\tSlot %3u: ", i);
 		if (rb->d[i]) {
-			LOG_PRINT("CRC32 0x%08x FILE %s", rb->slot[i].crc32,
-				  (logging.level >= 2 && filename) ? filename : basename);
+			LOG_PRINT("CRC32 0x%08x", rb->slot[i].crc32);
+			if (rb->slot[i].builtin) {
+				LOG_PRINT(" BUILTIN %s", basename);
+			} else {
+				LOG_PRINT(" FILE %s", basename);
+			}
 			if (rb->slot[i].offset > 0) {
 				LOG_PRINT(" +0x%06lx", (unsigned long)rb->slot[i].offset);
 			}
@@ -142,79 +141,6 @@ void rombank_report(struct rombank *rb, const char *par, const char *name) {
 	}
 }
 
-// Verify ROM bank CRC.  Pass negative slot id to check combined CRC.
-
-bool rombank_verify_crc(struct rombank *rb, const char *name, int slot,
-			 const char *crclist, bool force, uint32_t *crc32) {
-	bool present = 0;
-	uint32_t check_crc32 = CRC32_RESET;
-	if (slot < 0) {
-		check_crc32 = rb->combined_crc32;
-		// Check that any slot is populated
-		for (unsigned i = 0; i < rb->nslots; i++) {
-			if (rb->d[i]) {
-				present = 1;
-				break;
-			}
-		}
-	} else if ((unsigned)slot < rb->nslots && rb->d[slot]) {
-		check_crc32 = rb->slot[slot].crc32;
-		present = 1;
-	}
-
-	uint32_t expected = crc32 ? *crc32 : 0;
-	bool listed = present && crclist_match(crclist, check_crc32);
-	/* 1.12.1 accepts NTSC Super ECB when coco3.c preloads 0xb4c88d6c.
-	   Keep that even if @coco3 was wiped by xroar.conf. */
-	bool expected_ok = present && expected != 0 && check_crc32 == expected;
-	if (!listed && !expected_ok && present) {
-		for (unsigned i = 0; i < rb->nslots; i++) {
-			if (!rb->d[i]) {
-				continue;
-			}
-			uint32_t sc = rb->slot[i].crc32;
-			if (crclist_match(crclist, sc) || (expected != 0 && sc == expected)) {
-				check_crc32 = sc;
-				expected_ok = 1;
-				break;
-			}
-		}
-	}
-	bool valid = listed || expected_ok;
-	bool forced = present && !valid && force;
-
-	if (forced) {
-		LOG_DEBUG(1, "\t%s CRC32 forced to 0x%08x\n", name, *crc32);
-		symtab_clear(&rb->symtab);
-		struct rom_meta *rm = rom_meta_by_crc32(*crc32, 16384);
-		if (rm && rm->symtab) {
-			symtab_include(&rb->symtab, rm->symtab);
-		}
-		return 1;
-	}
-
-	*crc32 = check_crc32;
-
-	if (valid) {
-		LOG_DEBUG(1, "\t%s CRC32 valid\n", name);
-		return 1;
-	}
-
-	if (!present) {
-		LOG_DEBUG(1, "\t%s CRC32 INVALID (no image loaded)\n", name);
-	} else {
-		char listbuf[256];
-		crclist_snprintf(listbuf, sizeof(listbuf), crclist);
-		LOG_DEBUG(1, "\t%s CRC32 INVALID (got 0x%08x, list %s)\n",
-			  name, check_crc32, listbuf[0] ? listbuf : (crclist ? crclist : "?"));
-		if (check_crc32 == 0xb4c88d6c || check_crc32 == 0xff050d80) {
-			LOG_DEBUG(1, "\t(0x%08x is documented Super ECB; INVALID here is the CRC *list*, not a bad dump. Try -no-c)\n",
-				  check_crc32);
-		}
-	}
-	return 0;
-}
-
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 static void recompute_crc32(struct rombank *);
@@ -226,21 +152,26 @@ int rombank_load_image(struct rombank *rb, unsigned slot, const char *filename, 
 		return -1;
 	}
 
-	FILE *fd = fopen(filename, "rb");
-	if (!fd) {
+	FILE *fd = NULL;
+	struct rom_builtin *builtin = rom_builtin_by_name(filename);
+	if (!builtin) {
+		fd = fopen(filename, "rb");
+	}
+	if (!fd && !builtin) {
 		LOG_MOD_DEBUG(2, "rom", "%s: %s\n", filename, strerror(errno));
 		return -1;
 	}
 
-	off_t file_size = fs_file_size(fd);
+	off_t file_size = fd ? fs_file_size(fd) : *builtin->size;
 
-	LOG_MOD_DEBUG(2, "rom", "opened: %s (%lld bytes)\n", filename, (long long)file_size);
+	LOG_MOD_DEBUG(2, "rom", "%s: %s (%lld bytes)\n", builtin ? "built-in" : "opened", filename, (long long)file_size);
 
-	if (file_size > 256 && (file_size % 256) != 0) {
+	// Any remainder from size % 256 considered a skippable header
+	if (fd && file_size > 256 && (file_size % 256) != 0) {
 		offset += (file_size % 256);
 	}
 
-	if (file_size < 0 || offset >= file_size || fseeko(fd, offset, SEEK_SET) < 0) {
+	if (file_size < 0 || offset >= file_size || (fd && fseeko(fd, offset, SEEK_SET) < 0)) {
 		fclose(fd);
 		return -1;
 	}
@@ -251,11 +182,20 @@ int rombank_load_image(struct rombank *rb, unsigned slot, const char *filename, 
 		free(rb->slot[slot].filename);
 		rb->slot[slot].filename = filename_dup;
 		rb->slot[slot].offset = offset;
+		rb->slot[slot].builtin = builtin ? 1 : 0;
 		if (!rb->d[slot]) {
 			rb->d[slot] = xmalloc(rb->slot_size);
 		}
 		memset(rb->d[slot], 0xff, rb->slot_size);
-		size_t nread = fread(rb->d[slot], 1, rb->slot_size, fd);
+		off_t nread = 0;
+		if (fd) {
+			nread = fread(rb->d[slot], 1, rb->slot_size, fd);
+		} else {
+			nread = rb->slot_size;
+			if (nread > file_size)
+				nread = file_size;
+			memcpy(rb->d[slot], builtin->data + offset, nread);
+		}
 		if (nread == 0) {
 			break;
 		}
@@ -268,7 +208,8 @@ int rombank_load_image(struct rombank *rb, unsigned slot, const char *filename, 
 		}
 	}
 	recompute_crc32(rb);
-	fclose(fd);
+	if (fd)
+		fclose(fd);
 
 	return 1;
 }

@@ -362,12 +362,6 @@ Define a ROM list.
 \f(CB\-romlist\-print\fR
 Print defined ROM lists.
 .TP
-\f(CB\-crclist\fR \fIname\fR=\fIlist\fR
-Define a ROM CRC list.
-.TP
-\f(CB\-crclist\-print\fR
-Print defined ROM CRC lists.
-.TP
 \f(CB\-force\-crc\-match\fR
 Force per-architecture CRC matches.
 .H2 User interface:
@@ -474,6 +468,9 @@ Port for GDB target to listen on \[lB]65520\[rB]
 \f(CB\-gdb\-pseudo\-regs\fR
 Enable pseudo-registers (e.g. SAM, PIA) for GDB.
 .TP
+\f(CB\-gdb\-flags\-as\-struct\fR
+Describe CPU flags as a struct to GDB.
+.TP
 \f(CB\-no\-ratelimit\fR
 Run CPU as fast as possible.
 .TP
@@ -523,6 +520,12 @@ Start trace mode at trap for \fIn\fR instructions.
 .TP
 \f(CB\-trap\-no\-trace\fR
 Stop trace mode at trap.
+.TP
+\f(CB\-trap\-ratelimit\fR
+Enable rate limiting at trap (run normal speed).
+.TP
+\f(CB\-trap\-no\-ratelimit\fR
+Disable rate limiting at trap (run fast).
 .PP
 Trap \fIcondition\fRs can be one of the following:
 .P

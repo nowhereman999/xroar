@@ -1,19 +1,15 @@
-/** \file
+/* Common code for Dragon and Tandy Colour Computer machines.
  *
- *  \brief Common code for Dragon and Tandy Colour Computer machines.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -32,8 +28,6 @@
 #include "ao.h"
 #include "breakpoint.h"
 #include "cart.h"
-#include "crc32.h"
-#include "crclist.h"
 #include "debug.h"
 #include "dragon/dragon.h"
 #include "dragon/immunity.h"
@@ -418,14 +412,14 @@ bool dragon_finish_common(struct dragon *md) {
 		debug_target_add_part(m->debug.target, NULL, &md->SAM->debug.part);
 		debug_target_add_part(m->debug.target, "pia0", &md->PIA0->debug.part);
 		debug_target_add_part(m->debug.target, "pia1", &md->PIA1->debug.part);
+		if (md->immunity) {
+			debug_target_add_part(m->debug.target, NULL, &md->immunity->debug.part);
+		}
 	}
 	m->debug.target_xml = debug_target_xml(m->debug.target);
 #endif
 
-	md->has_combined = md->has_extbas = md->has_bas = md->has_altbas = 0;
-	md->crc_combined = md->crc_extbas = md->crc_bas = md->crc_altbas = 0;
-	md->has_ext_charset = 0;
-	md->crc_ext_charset = 0;
+	_Bool has_ext_charset = 0;
 
 	if (mc->ext_charset_rom) {
 		md->ext_charset = rombank_new(8, 4096, 1);
@@ -441,8 +435,7 @@ bool dragon_finish_common(struct dragon *md) {
 			md->ext_charset = NULL;
 		} else {
 			rombank_report(md->ext_charset, p->partdb->name, "External character set");
-			md->crc_ext_charset = md->ext_charset->combined_crc32;
-			md->has_ext_charset = 1;
+			has_ext_charset = 1;
 		}
 	}
 
@@ -570,7 +563,7 @@ bool dragon_finish_common(struct dragon *md) {
 	}
 
 	/* VDG external charset */
-	if (md->has_ext_charset)
+	if (has_ext_charset)
 		md->VDG->fetch_data = DELEGATE_AS3(void, uint16, int, uint16p, vdg_fetch_handler_chargen, md);
 
 	/* Default all PIA connections to unconnected (no source, no sink) */
@@ -1285,10 +1278,12 @@ static void dragon_op_rts(struct machine *m) {
 static void dragon_dump_ram(struct machine *m, FILE *fd) {
 	struct dragon *md = (struct dragon *)m;
 	struct ram *ram = md->RAM;
-	for (unsigned bank = 0; bank < ram->nbanks; bank++) {
-		if (ram->d && ram->d[bank]) {
-			fwrite(ram->d[bank], ram->bank_nelems, 1, fd);
-		}
+	ram_dump(ram, fd);
+	if (md->SAM->RAM) {
+		ram_dump(md->SAM->RAM, fd);
+	}
+	if (md->immunity) {
+		ram_dump(md->immunity->mem, fd);
 	}
 }
 

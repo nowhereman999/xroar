@@ -1,19 +1,15 @@
-/** \file
+/* Generic debug interface.
  *
- *  \brief Generic debug interface.
+ * Copyright 2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -29,6 +25,7 @@
 
 #include "debug.h"
 #include "logging.h"
+#include "xroar.h"
 
 // Some built-in composite types used in target descriptions
 
@@ -115,10 +112,13 @@ void debug_target_add_part(struct debug_target *target, const char *name,
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
+#ifdef WANT_GDB_TARGET
+
 // Helper to add a composite type definition to a target description
 
 static sds debug_add_type_xml(sds xml, const struct debug_feature_type *type) {
 	const char *typestr = NULL;
+	bool flags_to_struct = 0;
 	switch (type->type) {
 	case debug_feature_base_type_uint:
 		return xml;
@@ -130,7 +130,8 @@ static sds debug_add_type_xml(sds xml, const struct debug_feature_type *type) {
 		}
 		return sdscatprintf(xml, "/>");
 	case debug_feature_base_type_flags:
-		typestr = "flags";
+		flags_to_struct = xroar.cfg.debug.gdb_flags_as_struct;
+		typestr = flags_to_struct ? "struct" : "flags";
 		break;
 	case debug_feature_base_type_struct:
 		typestr = "struct";
@@ -149,6 +150,10 @@ static sds debug_add_type_xml(sds xml, const struct debug_feature_type *type) {
 				   type->as_struct.field[i].start,
 				   type->as_struct.field[i].end);
 		const struct debug_feature_type *ttype = type->as_struct.field[i].type;
+		unsigned bitsize = type->as_struct.field[i].end - type->as_struct.field[i].start;
+		if (flags_to_struct && !ttype && bitsize < 8) {
+			ttype = &debug_feature_type_uint8;
+		}
 		if (ttype && ttype->id) {
 			xml = sdscatprintf(xml, " type=\"%s\"", ttype->id);
 		}
@@ -206,6 +211,8 @@ sds debug_target_xml(struct debug_target *target) {
 	return sdscatprintf(xml, "</target>");
 }
 
+#endif
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 int debug_register_by_name(struct debug_target *target, const char *name) {
@@ -232,6 +239,8 @@ void debug_set_register(struct debug_target *target, int regno, uint32_t value) 
 	const struct debug_part *part = target->reg_part[regno];
 	DELEGATE_CALL(part->set_register, regno, value);
 }
+
+#ifdef WANT_GDB_TARGET
 
 static int value_to_buf(enum debug_endian endian, unsigned vsize, uint32_t value,
 			size_t dsize, uint8_t *dst) {
@@ -316,3 +325,5 @@ int debug_set_register_composite(struct debug_target *target, int regno,
 		DELEGATE_CALL(dpart->set_register, reg_num, value);
 	return n;
 }
+
+#endif

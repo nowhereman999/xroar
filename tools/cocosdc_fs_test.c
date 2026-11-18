@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,25 @@
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
+
+/* Test fixtures must never silently use a truncated host pathname. */
+static int checked_snprintf(char *dest, size_t size, const char *format, ...)
+#if defined(__GNUC__)
+	__attribute__((format(printf, 3, 4)))
+#endif
+	;
+
+static int checked_snprintf(char *dest, size_t size, const char *format, ...) {
+	va_list ap;
+	va_start(ap, format);
+	int n = vsnprintf(dest, size, format, ap);
+	va_end(ap);
+	if (n < 0 || (size_t)n >= size) {
+		fprintf(stderr, "fixture formatting failed or exceeded %zu bytes\n", size);
+		exit(EXIT_FAILURE);
+	}
+	return n;
+}
 
 static struct sdc_fs fs;
 static struct sdc_hw hw;
@@ -268,7 +288,7 @@ static int rm_path(const char *path) {
 			     (de->d_name[1] == '.' && de->d_name[2] == 0))) {
 				continue;
 			}
-			if (snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >=
+			if (checked_snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >=
 			    (int)sizeof(child)) {
 				closedir(d);
 				return -1;
@@ -284,7 +304,7 @@ static int rm_path(const char *path) {
 static int host_size(const char *rel, long *out) {
 	char path[PATH_MAX];
 	struct stat st;
-	if (snprintf(path, sizeof(path), "%s/%s", root_path, rel) >= (int)sizeof(path)) {
+	if (checked_snprintf(path, sizeof(path), "%s/%s", root_path, rel) >= (int)sizeof(path)) {
 		return -1;
 	}
 	if (stat(path, &st) != 0) {
@@ -506,13 +526,13 @@ static void test_dir_listing(const char *hello, size_t hello_n) {
 	check(rec_named(block, "HELLO   TXT") < 0, "wildcard does not list root HELLO");
 
 	/* Two pages: 20 files → 16 + 4, unused records zero. */
-	if (snprintf(path, sizeof(path), "%s/PAGES", root_path) < (int)sizeof(path) &&
+	if (checked_snprintf(path, sizeof(path), "%s/PAGES", root_path) < (int)sizeof(path) &&
 	    mkdir(path, 0755) == 0) {
 		for (i = 0; i < 20; i++) {
 			char f[PATH_MAX];
 			char name[16];
-			snprintf(name, sizeof(name), "F%02d.DAT", i);
-			snprintf(f, sizeof(f), "%s/%s", path, name);
+			checked_snprintf(name, sizeof(name), "F%02d.DAT", i);
+			checked_snprintf(f, sizeof(f), "%s/%s", path, name);
 			(void)write_file(f, name, strlen(name));
 		}
 		put_cmd(block, "L:PAGES/*.*");
@@ -548,7 +568,7 @@ static void test_mkdir_delete(void) {
 
 	put_cmd(block, "K:SUBDIR");
 	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "K:SUBDIR");
-	snprintf(path, sizeof(path), "%s/SUBDIR", root_path);
+	checked_snprintf(path, sizeof(path), "%s/SUBDIR", root_path);
 	check(stat(path, &st) == 0 && S_ISDIR(st.st_mode), "SUBDIR exists on host");
 
 	put_cmd(block, "n:SUBDIR/TMP.BIN");
@@ -564,6 +584,32 @@ static void test_mkdir_delete(void) {
 	put_cmd(block, "X:SUBDIR");
 	check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "X: empty dir");
 	check(stat(path, &st) != 0, "SUBDIR removed");
+}
+
+static void test_rename(void) {
+ uint8_t block[SDC_BLOCK_SIZE];
+ put_cmd(block, "n:RENOLD.DAT");
+ check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "rename fixture create");
+ put_cmd(block, "R:RENOLD.DAT");
+ strcpy((char *)block + strlen((char *)block) + 1, "RENNEW.DAT");
+ check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "mounted rename rejected");
+ put_cmd(block, "M:"); comm_sdc(0xe0, 0, 0, block, 1);
+ put_cmd(block, "R:RENOLD.DAT");
+ strcpy((char *)block + strlen((char *)block) + 1, "../ESCAPE.DAT");
+ check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "rename traversal rejected");
+ put_cmd(block, "R:RENOLD.DAT");
+ strcpy((char *)block + strlen((char *)block) + 1, "HELLO.TXT");
+ check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "rename does not overwrite");
+ put_cmd(block, "R:RENOLD.DAT");
+ strcpy((char *)block + strlen((char *)block) + 1, "RENNEW.DAT");
+ check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "rename succeeds");
+ put_cmd(block, "m:RENNEW.DAT");
+ check(comm_sdc(0xe0, 0, 0, block, 1) == 0, "renamed file exists");
+ put_cmd(block, "M:"); comm_sdc(0xe0, 0, 0, block, 1);
+ put_cmd(block, "m:RENOLD.DAT");
+ check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "rename removes old name");
+ memset(block, 'A', sizeof(block)); block[0]='R'; block[1]=':';
+ check(comm_sdc(0xe0, 0, 0, block, 1) != 0, "unterminated rename rejected");
 }
 
 static void test_escape(void) {
@@ -591,7 +637,7 @@ static void test_stream(void) {
 	file[1023] = 0xb1;
 	file[1024] = 0xc0;
 	file[nfile - 1] = 0xc1;
-	if (snprintf(path, sizeof(path), "%s/STREAM.BIN", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/STREAM.BIN", root_path) >= (int)sizeof(path) ||
 	    write_file(path, file, nfile) != 0) {
 		check(0, "write STREAM.BIN");
 		return;
@@ -706,7 +752,7 @@ static void test_play(void) {
 	pcm[1023] = 0x55;
 	pcm[1024] = 0x66;
 	pcm[npcm - 1] = 0x77;
-	if (snprintf(path, sizeof(path), "%s/PLAY.RAW", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/PLAY.RAW", root_path) >= (int)sizeof(path) ||
 	    write_file(path, pcm, npcm) != 0) {
 		check(0, "write PLAY.RAW");
 		return;
@@ -926,7 +972,7 @@ static void test_dsk_mount_and_fdc(void) {
 	struct sdc_fdc fdc;
 	uint8_t wr[SDC_BLOCK_SIZE];
 
-	if (snprintf(path, sizeof(path), "%s/START.DSK", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/START.DSK", root_path) >= (int)sizeof(path) ||
 	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
 		check(0, "write START.DSK");
 		return;
@@ -1008,12 +1054,12 @@ static void test_startup_cfg_and_jvc(void) {
 	struct sdc_fdc fdc;
 	struct sdc_fs fs2;
 
-	if (snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path) ||
 	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
 		check(0, "write AUTO.DSK");
 		return;
 	}
-	if (snprintf(cfg, sizeof(cfg), "%s/startup.cfg", root_path) >= (int)sizeof(cfg) ||
+	if (checked_snprintf(cfg, sizeof(cfg), "%s/startup.cfg", root_path) >= (int)sizeof(cfg) ||
 	    write_file(cfg, "D=/\n0=AUTO.DSK\n", strlen("D=/\n0=AUTO.DSK\n")) != 0) {
 		check(0, "write startup.cfg");
 		return;
@@ -1040,7 +1086,7 @@ static void test_startup_cfg_and_jvc(void) {
 	}
 	jvc[0] = 18;
 	jvc[1] = 1;
-	if (snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path)) {
+	if (checked_snprintf(path, sizeof(path), "%s/AUTO.DSK", root_path) >= (int)sizeof(path)) {
 		free(jvc);
 		check(0, "AUTO.DSK path");
 		return;
@@ -1057,7 +1103,7 @@ static void test_startup_cfg_and_jvc(void) {
 		}
 		fclose(fp);
 	}
-	if (snprintf(path, sizeof(path), "%s/JVC.DSK", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/JVC.DSK", root_path) >= (int)sizeof(path) ||
 	    write_file(path, jvc, 2 + DECB_DSK_BYTES) != 0) {
 		free(jvc);
 		check(0, "write JVC.DSK");
@@ -1285,7 +1331,7 @@ static void test_mounted_dir_empty_vs_real_layout(void) {
 	int n;
 
 	/* Old unit-test layout: names on T17 S2. Mount works; DECB DIR is empty. */
-	if (snprintf(path, sizeof(path), "%s/SKEW.DSK", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/SKEW.DSK", root_path) >= (int)sizeof(path) ||
 	    write_decb_dsk_skewed(path, bas, strlen(bas)) != 0) {
 		check(0, "write SKEW.DSK");
 		return;
@@ -1305,7 +1351,7 @@ static void test_mounted_dir_empty_vs_real_layout(void) {
 	(void)comm_sdc(0xe0, 0, 0, block, 1);
 
 	/* Correct layout + Studio-style $FF unused entries and several files. */
-	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
 	    write_studio_launch_dsk(path) != 0) {
 		check(0, "write Studio-style LAUNCH.DSK");
 		return;
@@ -1334,7 +1380,7 @@ static void test_fdc_host_persist_and_ok_empty_dir(void) {
 	struct sdc_fdc fdc;
 	int n;
 
-	if (snprintf(path, sizeof(path), "%s/PERSIST.DSK", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/PERSIST.DSK", root_path) >= (int)sizeof(path) ||
 	    write_studio_launch_dsk(path) != 0) {
 		check(0, "write persist LAUNCH-layout DSK");
 		return;
@@ -1417,12 +1463,12 @@ static void test_decb_dskcon_and_glen_cfg(void) {
 	check(last_status == 0x80, "unmounted DECB DCSTA is $80 not-ready");
 	check(sec[0] == 0xaa, "unmounted DECB did not deliver a fake empty sector");
 
-	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/LAUNCH.DSK", root_path) >= (int)sizeof(path) ||
 	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
 		check(0, "write LAUNCH.DSK");
 		return;
 	}
-	if (snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", root_path) >= (int)sizeof(cfg) ||
+	if (checked_snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", root_path) >= (int)sizeof(cfg) ||
 	    write_file(cfg, glen_cfg, sizeof(glen_cfg)) != 0) {
 		check(0, "write Glen STARTUP.CFG bytes");
 		return;
@@ -1458,17 +1504,17 @@ static void test_decb_dskcon_and_glen_cfg(void) {
 	check(sdc_fs_fdc_ready(&fs, 0), "hard reset remounts LAUNCH.DSK FDC");
 
 	/* Path with spaces (Google Drive style sdc-root). */
-	if (snprintf(space_root, sizeof(space_root), "%s/google drive", root_path) >=
+	if (checked_snprintf(space_root, sizeof(space_root), "%s/google drive", root_path) >=
 	    (int)sizeof(space_root) || mkdir(space_root, 0755) != 0) {
 		check(0, "mkdir sdc-root with spaces");
 		return;
 	}
-	if (snprintf(path, sizeof(path), "%s/LAUNCH.DSK", space_root) >= (int)sizeof(path) ||
+	if (checked_snprintf(path, sizeof(path), "%s/LAUNCH.DSK", space_root) >= (int)sizeof(path) ||
 	    write_decb_dsk(path, bas, strlen(bas)) != 0) {
 		check(0, "LAUNCH.DSK under spaced sdc-root");
 		return;
 	}
-	if (snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", space_root) >= (int)sizeof(cfg) ||
+	if (checked_snprintf(cfg, sizeof(cfg), "%s/STARTUP.CFG", space_root) >= (int)sizeof(cfg) ||
 	    write_file(cfg, glen_cfg, sizeof(glen_cfg)) != 0) {
 		check(0, "STARTUP.CFG under spaced sdc-root");
 		return;
@@ -1527,10 +1573,10 @@ static void test_lsn_command_variants(void) {
 				memset(image + header + sector * SDC_BLOCK_SIZE,
 				       (uint8_t)(sector ^ (drive * 0x80)), SDC_BLOCK_SIZE);
 			}
-			snprintf(name, sizeof(name), "VAR%u%u.DSK", geometry, drive);
-			snprintf(path, sizeof(path), "%s/%s", root_path, name);
+			checked_snprintf(name, sizeof(name), "VAR%u%u.DSK", geometry, drive);
+			checked_snprintf(path, sizeof(path), "%s/%s", root_path, name);
 			check(write_file(path, image, size) == 0, "create LSN variant disk");
-			snprintf(command, sizeof(command), "M:%s", name);
+			checked_snprintf(command, sizeof(command), "M:%s", name);
 			put_cmd(block, command);
 			check(comm_sdc((uint8_t)(0xe0 | drive), 0, 0, block, 1) == 0,
 			      "mount LSN variant disk in requested slot");
@@ -1556,7 +1602,7 @@ static void test_lsn_command_variants(void) {
 			      memcmp(block, payload, sizeof(block)) == 0,
 			      "$A2/$A3 data reads back through $82/$83");
 
-			snprintf(path, sizeof(path), "%s/VAR%u%u.DSK", root_path, geometry, drive);
+			checked_snprintf(path, sizeof(path), "%s/VAR%u%u.DSK", root_path, geometry, drive);
 			FILE *fp = fopen(path, "rb");
 			int persisted = fp && fseek(fp, (long)(header + physical * SDC_BLOCK_SIZE), SEEK_SET) == 0 &&
 				fread(actual, 1, sizeof(actual), fp) == sizeof(actual) &&
@@ -1634,7 +1680,7 @@ static void test_invalid_jvc_geometry(void) {
 	uint8_t block[SDC_BLOCK_SIZE];
 	char path[PATH_MAX];
 	if (!check(image != NULL, "allocate invalid JVC fixture")) return;
-	snprintf(path, sizeof(path), "%s/BADGEOM.DSK", root_path);
+	checked_snprintf(path, sizeof(path), "%s/BADGEOM.DSK", root_path);
 	for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
 		memcpy(image, bad[i], sizeof(bad[i]));
 		check(write_file(path, image, size) == 0, "write unsupported JVC geometry");
@@ -1657,15 +1703,15 @@ int main(void) {
 		perror("mkdtemp");
 		return 1;
 	}
-	snprintf(root_path, sizeof(root_path), "%s", root);
+	checked_snprintf(root_path, sizeof(root_path), "%s", root);
 
-	snprintf(path, sizeof(path), "%s/HELLO.TXT", root);
+	checked_snprintf(path, sizeof(path), "%s/HELLO.TXT", root);
 	if (write_file(path, hello, sizeof(hello)) != 0) {
 		fprintf(stderr, "FAIL: write HELLO.TXT\n");
 		rm_path(root);
 		return 1;
 	}
-	snprintf(path, sizeof(path), "%s/GAMES", root);
+	checked_snprintf(path, sizeof(path), "%s/GAMES", root);
 	if (mkdir(path, 0755) != 0) {
 		fprintf(stderr, "FAIL: mkdir GAMES\n");
 		rm_path(root);
@@ -1675,7 +1721,7 @@ int main(void) {
 	foo[0] = 'F';
 	foo[1] = 'O';
 	foo[2] = 'O';
-	snprintf(path, sizeof(path), "%s/GAMES/FOO.BIN", root);
+	checked_snprintf(path, sizeof(path), "%s/GAMES/FOO.BIN", root);
 	if (write_file(path, foo, sizeof(foo)) != 0) {
 		fprintf(stderr, "FAIL: write FOO.BIN\n");
 		rm_path(root);
@@ -1699,6 +1745,7 @@ int main(void) {
 	test_slots_inuse();
 	test_dir_listing(hello, sizeof(hello));
 	test_mkdir_delete();
+	test_rename();
 	test_escape();
 	test_stream();
 	test_play();

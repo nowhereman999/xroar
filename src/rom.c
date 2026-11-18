@@ -1,31 +1,41 @@
-/** \file
+/* ROM metadata.
  *
- *  \brief ROM metadata.
+ * Copyright 2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
+
+// for fmemopen
+#define _POSIX_C_SOURCE 200809L
 
 #include "top-config.h"
 
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "array.h"
 #include "slist.h"
 #include "xalloc.h"
 
 #include "rom.h"
+
+// Built-in ROMs
+
+extern unsigned char bsdos_bsdos_rom[];
+extern unsigned int bsdos_bsdos_rom_len;
+
+struct rom_builtin builtin_list[] = {
+	{ .name = "bsdos", .data = bsdos_bsdos_rom, .size = &bsdos_bsdos_rom_len },
+};
 
 static struct slist *rom_meta_list = NULL;
 
@@ -162,6 +172,7 @@ static const struct rom_meta_internal rom_internal[] = {
 	{ DESC(0xdffc86c4, 0x2000, "YA-DOS 0.5B Picard"), P_IDE },
 	{ DESC(0x53e22a43, 0x2000, "YA-DOS 0.5D Picard"), P_IDE },
 	{ DESC(0x0baadcc4, 0x2000, "YA-DOS 0.5E Picard"), P_IDE },
+	{ DESC(0x9f37097c, 0x2000, "BSDOS 0.1 (Ciaran Anscomb)"), P_IDE },
 
 	// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
@@ -362,4 +373,15 @@ static void rom_meta_free(void *sptr) {
 void rom_meta_remove_all(void) {
 	slist_free_full(rom_meta_list, (slist_free_func)rom_meta_free);
 	rom_meta_list = NULL;
+}
+
+// Built-in ROMs.
+
+struct rom_builtin *rom_builtin_by_name(const char *name) {
+	for (size_t i = 0; i < ARRAY_N_ELEMENTS(builtin_list); ++i) {
+		if (strcmp(builtin_list[i].name, name) == 0) {
+			return &builtin_list[i];
+		}
+	}
+	return NULL;
 }

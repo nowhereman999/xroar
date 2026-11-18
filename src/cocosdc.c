@@ -68,6 +68,7 @@ struct cocosdc {
 	uint8_t flash_bank;
 	struct becker *becker;
 	bool becker_selected;
+	bool dragon;
 };
 
 #define COCOSDC_SER_HW_BLOCK (10)
@@ -96,6 +97,7 @@ static const struct ser_struct ser_struct_cocosdc[] = {
 	SER_ID_STRUCT_ELEM(21, struct cocosdc, hw.stream_8bit),
 	SER_ID_STRUCT_ELEM(22, struct cocosdc, fs.stream_off),
 	SER_ID_STRUCT_ELEM(23, struct cocosdc, fs.stream_end),
+	SER_ID_STRUCT_ELEM(24, struct cocosdc, dragon),
 };
 
 static bool cocosdc_read_elem(void *sptr, struct ser_handle *sh, int tag);
@@ -110,6 +112,7 @@ static const struct ser_struct_data cocosdc_ser_struct_data = {
 
 static struct xconfig_option const cocosdc_options[] = {
 	{ XCO_SET_STRING_NE("sdc-root", struct cocosdc, root) },
+	{ XCO_SET_BOOL("sdc-dragon", struct cocosdc, dragon) },
 };
 
 static const struct xconfig_set cocosdc_option_set = {
@@ -179,6 +182,7 @@ static struct part *cocosdc_allocate(void) {
 	c->detach = cocosdc_detach;
 
 	sdc->becker_selected = false;
+	sdc->dragon = false;
 	sdc_hw_reset(&sdc->hw);
 	sdc_fdc_reset(&sdc->fdc);
 	sdc_fs_init(&sdc->fs);
@@ -609,6 +613,10 @@ static uint8_t cocosdc_read(struct cart *c, uint16_t A, bool P2, bool R2, uint8_
 		return D;
 	}
 
+	/* DRGN switch exchanges the controller and latch register groups.
+	 * Normalize once so flash, Becker and command-mode share the layout. */
+	if (sdc->dragon) A ^= 8;
+
 	/* Becker before flash so $FF42 talks to FujiNet when -cart-becker
 	 * connected.  SDC registers are classified separately and fall
 	 * through below. */
@@ -663,6 +671,10 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 		return D;
 	}
 
+	/* DRGN switch exchanges the controller and latch register groups.
+	 * Normalize once so flash, Becker and command-mode share the layout. */
+	if (sdc->dragon) A ^= 8;
+
 	/* $FF42 is shared with the SDC flash probe.  A Becker status read
 	 * selects the network data register; a flash-bank access selects
 	 * flash again.  The unambiguous $FF46 alias is always Becker. */
@@ -694,6 +706,8 @@ static uint8_t cocosdc_write(struct cart *c, uint16_t A, bool P2, bool R2, uint8
 	if (reg == 0x00) {
 		sdc_hw_write(&sdc->hw, reg, D);
 		if (D == SDC_CMDMODE) {
+			/* Streaming players use the flash data latch as scratch RAM. */
+			sdc->becker_selected = false;
 			sdc->fdc.halt_enable = 0;
 			sdc->fdc.drq = 0;
 			sdc_fdc_set_intrq(&sdc->fdc, 0);

@@ -1,23 +1,20 @@
-/** \file
+/* ROM bank support.
  *
- *  \brief ROM bank support.
+ * Copyright 2024-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2024 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
- *
- * A ROM bank consists of a number of contiguous slots.  Each slot must be a
- * power of 2, as must the number of slots.  Any slot may be empty.  If a
- * shadowed region is required, create a bank with fewer slots.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* A ROM bank consists of a number of contiguous slots.  Each slot must be
+ * a power of 2, as must the number of slots.  Any slot may be empty.  If
+ * a shadowed region is required, create a bank with fewer slots.
  *
  * Usage:
  *
@@ -39,6 +36,7 @@ struct rombank_slot_file {
 	char *filename;  // absolute path
 	off_t offset;    // into file for this slot
 	uint32_t crc32;
+	bool builtin;    // indicate built-in ROM
 };
 
 struct rombank {
@@ -62,13 +60,6 @@ void rombank_free(struct rombank *);
 // Report ROM bank contents
 
 void rombank_report(struct rombank *, const char *par, const char *name);
-
-// Verify ROM bank CRC.  Pass negative slot id to check combined CRC.  If force
-// is set to true, the value pointed to by crc32 is not overwritten if the CRC
-// did not check.
-
-bool rombank_verify_crc(struct rombank *rb, const char *name, int slot,
-			 const char *crclist, bool force, uint32_t *crc32);
 
 // Load ROM image.
 

@@ -1,19 +1,15 @@
-/** \file
+/* Joysticks.
  *
- *  \brief Joysticks.
+ * Copyright 2003-2024 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2024 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -156,6 +152,8 @@ void joystick_shutdown(void) {
 	}
 	messenger_client_unregister(msgr_client_id);
 	slist_free_full(config_list, (slist_free_func)joystick_config_free_void);
+	free(joystick_port_config_name[0]);
+	free(joystick_port_config_name[1]);
 	config_list = NULL;
 	js_db_free();
 }
@@ -917,7 +915,9 @@ static struct joystick_submodule *select_submod(struct joystick_submodule *submo
 
 // Joystick reading
 
+#include "av_joystick.inc"
 int joystick_read_axis(int port, int axis_index) {
+	if (port==0 && av_poll_pointer()) return av_pointer[axis_index]*1024+512;
 	struct joystick *j = joystick_port[port];
 	if (j && j->axes[axis_index]) {
 		struct joystick_control *axis = j->axes[axis_index];
@@ -927,6 +927,7 @@ int joystick_read_axis(int port, int axis_index) {
 }
 
 static inline int read_button(int port, int button_index) {
+	if (port==0 && av_poll_pointer()) return (av_pointer[2] >> (2*button_index)) & 1;
 	struct joystick *j = joystick_port[port];
 	if (j && j->buttons[button_index]) {
 		struct joystick_control *button = j->buttons[button_index];

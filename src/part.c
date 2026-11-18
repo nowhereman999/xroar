@@ -1,19 +1,15 @@
-/** \file
+/* Parts & interfaces.
  *
- *  \brief Parts & interfaces.
+ * Copyright 2018-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2018-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -284,7 +280,7 @@ void *part_new(size_t psize) {
 	void *m = xmalloc(psize < sizeof(struct part) ? sizeof(struct part) : psize);
 	struct part *p = m;
 	*p = (struct part){0};
-	PART_DEBUG("part_new() = %p\n", p);
+	PART_DEBUG("part_new() = %p\n", (void *)p);
 	return m;
 }
 
@@ -294,7 +290,7 @@ void part_free(struct part *p) {
 
 	const struct partdb_entry *pe = p->partdb;
 
-	PART_DEBUG("part_free(%p) '%s'\n", p, pe->name);
+	PART_DEBUG("part_free(%p) '%s'\n", (void *)p, pe->name);
 
 	if (p->parent) {
 		part_remove_component(p->parent, p);

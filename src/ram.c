@@ -1,25 +1,22 @@
-/** \file
+/* RAM.
  *
- *  \brief RAM.
+ * Copyright 2024-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2024 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -365,4 +362,16 @@ unsigned ram_report(struct ram *ram, const char *par, const char *name) {
 	LOG_PAR_MOD_DEBUG(1, par, "ram", "%u bank%s * %uK = %uK %s\n", nbanks,
 			  (nbanks == 1) ? "" : "s", bank_k, k, name);
 	return k;
+}
+
+void ram_dump_bank(struct ram *ram, unsigned bank, FILE *fd) {
+	if (ram->d && ram->d[bank]) {
+		fwrite(ram->d[bank], ram->bank_nelems, 1, fd);
+	}
+}
+
+void ram_dump(struct ram *ram, FILE *fd) {
+	for (unsigned bank = 0; bank < ram->nbanks; bank++) {
+		ram_dump_bank(ram, bank, fd);
+	}
 }

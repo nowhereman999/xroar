@@ -1,28 +1,25 @@
-/** \file
+/* Dragon 64 support.
  *
- *  \brief Dragon 64 support.
+ * Copyright 2003-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2003-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
+ * See COPYING.GPL for redistribution conditions.
+ */
+
+/* This file is included into dragon.c and provides the code specific to the
+ * Dragon 64.
  *
- *  See COPYING.GPL for redistribution conditions.
+ * This machine is basically the same as the Dragon 32, but includes 64K RAM
+ * by default, an extra BASIC ROM and an ACIA for serial comms.
  *
- *  \endlicenseblock
- *
- *  This file is included into dragon.c and provides the code specific to the
- *  Dragon 64.
- *
- *  This machine is basically the same as the Dragon 32, but includes 64K RAM
- *  by default, an extra BASIC ROM and an ACIA for serial comms.
- *
- *  The ACIA is not emulated beyond some status registers to fool the ROM code
- *  into thinking it is present.
+ * The ACIA is not emulated beyond some status registers to fool the ROM code
+ * into thinking it is present.
  */
 
 #include "top-config.h"
@@ -167,13 +164,9 @@ static bool dragon64_finish(struct part *p) {
 
 	// Report and check CRC (32K BASIC)
 	rombank_report(mdp->dragon.ROM0, "dragon64", "32K BASIC");
-	md->crc_combined = 0x84f68bf9;  // Dragon 64 32K mode BASIC
-	md->has_combined = rombank_verify_crc(mdp->dragon.ROM0, "32K BASIC", -1, "@d64_1", xroar.cfg.force_crc_match, &md->crc_combined);
 
 	// Report and check CRC (64K BASIC)
 	rombank_report(mdp->ROM1, "dragon64", "64K BASIC");
-	md->crc_altbas = 0x17893a42;  // Dragon 64 64K mode BASIC
-	md->has_altbas = rombank_verify_crc(mdp->ROM1, "64K BASIC", -1, "@d64_2", xroar.cfg.force_crc_match, &md->crc_altbas);
 
 	// Override PIA1 PB2 as ROMSEL
 	md->PIA1->b.in_source |= (1<<2);  // pull-up

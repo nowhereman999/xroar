@@ -1,22 +1,15 @@
-/** \file
+/* Tandy MC-10 machine.
  *
- *  \brief Tandy MC-10 machine.
+ * Copyright 2021-2026 Ciaran Anscomb
  *
- *  \copyright Copyright 2021-2026 Ciaran Anscomb
+ * This file is part of XRoar, a Dragon/Tandy CoCo emulator.
  *
- *  \licenseblock This file is part of XRoar, a Dragon/Tandy CoCo emulator.
+ * XRoar is free software; you can redistribute it and/or modify it under the
+ * terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
  *
- *  XRoar is free software; you can redistribute it and/or modify it under the
- *  terms of the GNU General Public License as published by the Free Software
- *  Foundation, either version 3 of the License, or (at your option) any later
- *  version.
- *
- *  See COPYING.GPL for redistribution conditions.
- *
- *  \endlicenseblock
- *
- *  Tandy MC-10 support is UNFINISHED and UNSUPPORTED.
- *  Please do not use except for testing.
+ * See COPYING.GPL for redistribution conditions.
  */
 
 #include "top-config.h"
@@ -32,8 +25,6 @@
 #include "ao.h"
 #include "breakpoint.h"
 #include "cart.h"
-#include "crc32.h"
-#include "crclist.h"
 #include "gdb.h"
 #include "keyboard.h"
 #include "logging.h"
@@ -110,10 +101,6 @@ struct mc10 {
 
 	// UI message receipt
 	int msgr_client_id;
-
-	// Useful configuration side-effect tracking
-	bool has_bas;
-	uint32_t crc_bas;
 };
 
 #define MC10_SER_RAM        (2)
@@ -430,8 +417,6 @@ static bool mc10_finish(struct part *p) {
 
 	// Report and check CRC (Microcolour BASIC)
 	rombank_report(mp->ROM0, "mc10", "MicroColour BASIC");
-	mp->crc_bas = 0x11fda97e;  // MicroColour BASIC 1.0 (MC-10)
-	mp->has_bas = rombank_verify_crc(mp->ROM0, "MicroColour BASIC", -1, "@mc10_compat", xroar.cfg.force_crc_match, &mp->crc_bas);
 
 	// RAM configuration
 	{
@@ -856,18 +841,12 @@ static void mc10_op_rts(struct machine *m) {
 static void mc10_dump_ram(struct machine *m, FILE *fd) {
 	struct mc10 *mp = (struct mc10 *)m;
 	struct ram *ram0 = mp->RAM0;
-	for (unsigned bank = 0; bank < ram0->nbanks; bank++) {
-		if (ram0->d && ram0->d[bank]) {
-			fwrite(ram0->d[bank], ram0->bank_nelems, 1, fd);
-		}
-	}
+	ram_dump(ram0, fd);
 	struct ram *ram1 = mp->RAM1;
 	if (ram1) {
 		for (unsigned i = 0; i < ram1->nbanks; i++) {
 			unsigned bank = (i + 1) & 3;
-			if (ram1->d && ram1->d[bank]) {
-				fwrite(ram1->d[bank], ram1->bank_nelems, 1, fd);
-			}
+			ram_dump_bank(ram1, bank, fd);
 		}
 	}
 }
