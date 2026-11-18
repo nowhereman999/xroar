@@ -117,9 +117,9 @@ const struct partdb_entry *partdb[] = {
 	(const struct partdb_entry *)&orch90_part,
 	(const struct partdb_entry *)&rsdos_part,
 	(const struct partdb_entry *)&idecart_part,
+	(const struct partdb_entry *)&cocosdc_part,
 #ifndef HAVE_WASM
 #ifdef WANT_EXPERIMENTAL
-	(const struct partdb_entry *)&cocosdc_part,
 	(const struct partdb_entry *)&ikon_part,
 #endif
 #endif

@@ -551,6 +551,11 @@ static char const * const default_config[] = {
 	"cart-desc 'IDE Interface'",
 	"cart-type ide",
 	"cart-becker",
+	// CoCoSDC (Phase D: FileAccess + stream + Play pacing)
+	"cart cocosdc",
+	"cart-desc 'CoCoSDC (Phase D)'",
+	"cart-type cocosdc",
+	"cart-rom @sdcdos",
 	// IDE Cartridge (Dragon)
 	"cart ide-dragon",
 	"cart-desc 'IDE Interface for Dragon'",
@@ -558,10 +563,6 @@ static char const * const default_config[] = {
 	"cart-rom bsdos",
 #ifndef HAVE_WASM
 #ifdef WANT_EXPERIMENTAL
-	// CoCoSDC cartridge
-	"cart cocosdc",
-	"cart-desc 'CoCoSDC'",
-	"cart-type cocosdc",
 	// Ikon Ultra Drive cartridge
 	"cart ikon",
 	"cart-desc 'Ikon Ultra Drive cartridge'",
@@ -665,6 +666,8 @@ static char const * const default_config[] = {
 	// RSDOS
 	"romlist rsdos=disk11,disk10",
 	"romlist cp450=cp450dsk,@rsdos",
+	// CoCoSDC SDC-DOS flash (Hardware → Cartridge and -cart cocosdc)
+	"romlist sdcdos=sdcdos,sdc-dos,sdc_dos,SDCDOS",
 	// Delta
 	"romlist delta=delta2,delta1a,delta19,delta,deltados,'Premier Micros - DeltaDOS'",
 #ifndef HAVE_WASM
@@ -2241,6 +2244,14 @@ static void xroar_ui_set_cartridge(void *sptr, int tag, void *smsg) {
 			for (unsigned i = 0; i < 2; ++i) {
 				ui_update_state(-1, ui_tag_hd_filename, i, private_cfg.file.hd[i]);
 			}
+			/* Cart reset alone leaves the 6809 in ECB / Disk BASIC.
+			 * Studio CoCoSDC Run starts with -cart cocosdc so the
+			 * following machine hard reset enters SDC-DOS.  Menu
+			 * Hardware → Cartridge after a Floppy session did not.
+			 * Hard-reset now so CoCoSDC is the same either way. */
+			if (cc->type && 0 == c_strcasecmp(cc->type, "cocosdc")) {
+				xroar_hard_reset();
+			}
 		} else {
 			cc = NULL;
 		}
@@ -2874,6 +2885,7 @@ static struct xconfig_option const xroar_options[] = {
 	{ XC_SET_INT1("cart-autorun", &private_cfg.cart.autorun) },
 	{ XC_SET_INT1("cart-becker", &private_cfg.cart.becker) },
 	{ XC_SET_STRING_LIST_NE("cart-opt", &private_cfg.cart.opts) },
+	{ XC_SET_STRING_NE("sdc-root", &xroar.cfg.sdc.root) },
 
 	/* Multi-Pak Interface: */
 	{ XC_SET_INT("mpi-slot", &private_cfg.cart.mpi.initial_slot) },
@@ -3102,6 +3114,8 @@ static void helptext(void) {
 "    -cart-rom2 NAME         second ROM image to load ($E000-)\n"
 "    -cart-autorun           autorun cartridge\n"
 "    -cart-becker            enable becker port where supported\n"
+"    -cart-opt STRING        cartridge type-specific option\n"
+"                            (cocosdc: sdc-root=DIR)\n"
 "    -mpi-slot N             (MPI) initially select slot (0-3)\n"
 "    -mpi-load-cart [N=]NAME\n"
 "                            (MPI) insert cartridge into next or numbered slot\n"
@@ -3136,6 +3150,7 @@ static void helptext(void) {
 " Hard disks:\n"
 "  -load-hdX FILE        use hard disk image FILE as drive X (0-1, e.g. for ide)\n"
 "  -load-sd FILE         use SD card image FILE (e.g. for mooh, nx32)\n"
+"  -sdc-root DIR         host directory mapped as CoCoSDC SD card root\n"
 "\n"
 
 " Keyboard:\n"
@@ -3356,6 +3371,7 @@ static void config_print_all(FILE *f, bool all) {
 	xroar_cfg_print_string(f, all, "load-fd3", private_cfg.file.fd[3], NULL);
 	xroar_cfg_print_string(f, all, "load-hd0", private_cfg.file.hd[0], NULL);
 	xroar_cfg_print_string(f, all, "load-hd1", private_cfg.file.hd[1], NULL);
+	xroar_cfg_print_string(f, all, "sdc-root", xroar.cfg.sdc.root, NULL);
 	xroar_cfg_print_string(f, all, "load-tape", private_cfg.file.tape, NULL);
 	xroar_cfg_print_string(f, all, "tape-write", private_cfg.file.tape_write, NULL);
 	xroar_cfg_print_string(f, all, "load-text", private_cfg.file.text, NULL);

@@ -136,6 +136,9 @@ xroar_SOURCES += \
 	gmc.c \
 	ide.c ide.h \
 	idecart.c \
+	cocosdc.c cocosdc_hw.h \
+	cocosdc_fs.c cocosdc_fs.h \
+	cocosdc_fdc.c cocosdc_fdc.h \
 	mooh.c \
 	mpi.c \
 	nx32.c \
@@ -148,7 +151,6 @@ xroar_SOURCES += \
 
 if EXPERIMENTAL
 xroar_SOURCES += \
-	cocosdc.c \
 	ikon.c
 endif
 endif
