@@ -249,6 +249,16 @@ xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"%LOCALAPPDATA%\\\\XRoar\"
 xroar_CFLAGS += -DROMPATH=\":%LOCALAPPDATA%\\\\XRoar\\\\roms:%USERPROFILE%\\\\Documents\\\\XRoar\\\\roms:%USERPROFILE%\\\\AppData\\\\Roaming\\\\XRoar\\\\roms\"
 xroar_CFLAGS += -DCONFPATH=\":%LOCALAPPDATA%\\\\XRoar:%USERPROFILE%\\\\Documents\\\\XRoar:%USERPROFILE%\\\\AppData\\\\Roaming\\\\XRoar\"
 else
+# Mac ROM/config dirs belong to Darwin, not the Cocoa UI.  An SDL3
+# `--without-gtk3` build has no UI_COCOA and used to search only
+# ~/.xroar/roms, so a good coco3.rom in ~/Library/XRoar/roms never loaded
+# (CRC32 INVALID, black screen).
+if DARWIN
+xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
+xroar_OBJCFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
+xroar_CFLAGS += -DROMPATH=\"~/Library/XRoar/roms:~/.xroar/roms:$(datadir)/xroar/roms:\"
+xroar_CFLAGS += -DCONFPATH=\"~/Library/XRoar:~/.xroar:$(sysconfdir):$(datadir)/xroar\"
+else
 if UI_COCOA
 xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
 xroar_OBJCFLAGS += -DAUTOSAVE_PREFIX=\"~/Library/XRoar\"
@@ -258,6 +268,7 @@ else
 xroar_CFLAGS += -DAUTOSAVE_PREFIX=\"~/.xroar\"
 xroar_CFLAGS += -DROMPATH=\"~/.xroar/roms:$(datadir)/xroar/roms:\"
 xroar_CFLAGS += -DCONFPATH=\"~/.xroar:$(sysconfdir):$(datadir)/xroar\"
+endif
 endif
 endif
 endif
@@ -293,6 +304,11 @@ xroar_CFLAGS += $(GL_CFLAGS)
 xroar_LDADD += $(GL_LIBS)
 xroar_SOURCES += \
 	vo_opengl.c vo_opengl.h
+if DARWIN
+# Apple OpenGL headers are deprecated; must be defined before those headers.
+xroar_CFLAGS += -DGL_SILENCE_DEPRECATION
+xroar_OBJCFLAGS += -DGL_SILENCE_DEPRECATION
+endif
 endif
 
 # GTK+ 3 user interface
@@ -449,18 +465,22 @@ endif
 
 endif
 
-# Mac OS X special case SDL user interface
+# Mac OS X Cocoa menu bar.
+# SDL3 video when that backend is selected; SDL2 otherwise.
+# NSMenu is installed for both `-ui macosx` and (SDL3) `-ui sdl`.
 
-if UI_SDL2
 if UI_COCOA
 xroar_CFLAGS += $(COCOA_CFLAGS)
-xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL_CFLAGS)
 xroar_LDADD += $(COCOA_LIBS)
+if UI_SDL3
+xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL3_CFLAGS)
+else
+xroar_OBJCFLAGS += $(COCOA_CFLAGS) $(SDL_CFLAGS)
+endif
 xroar_SOURCES += \
 	macosx/filereq_cocoa.m \
 	macosx/hkbd_darwin.c macosx/hkbd_darwin.h \
 	macosx/ui_macosx.m macosx/ui_macosx.h
-endif
 endif
 
 EXTRA_DIST += \
