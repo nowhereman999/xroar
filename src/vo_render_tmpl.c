@@ -333,14 +333,14 @@ static void TNAME(next_line)(struct vo_render *vr, unsigned npixels) {
 // in the viewport.
 
 static void TNAME(finish_frame)(struct vo_render *vr) {
+	if (!vr->buffer || !vr->pixel || vr->buffer_pitch <= 0)
+		return;
 	struct TNAME(vo_render) *vrt = (struct TNAME(vo_render) *)vr;
 	VR_PTYPE *dest = vr->pixel;
-	int y1 = vr->viewport.y + vr->viewport.h;
-	int x0 = vr->viewport.x;
-	int x1 = x0 + vr->viewport.w;
+	VR_PTYPE *end = (VR_PTYPE *)vr->buffer + vr->buffer_pitch * vr->viewport.h;
 	VR_PTYPE black = vrt->map_rgb(0, 0, 0);
-	for (int y = vr->scanline; y < y1; ++y) {
-		for (int x = x0; x < x1; ++x)
+	while (dest < end) {
+		for (int x = 0; x < vr->viewport.w; x++)
 			dest[x] = black;
 		dest += vr->buffer_pitch;
 	}
