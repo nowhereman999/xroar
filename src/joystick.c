@@ -915,7 +915,9 @@ static struct joystick_submodule *select_submod(struct joystick_submodule *submo
 
 // Joystick reading
 
+#include "av_joystick.inc"
 int joystick_read_axis(int port, int axis_index) {
+	if (port==0 && av_poll_pointer()) return av_pointer[axis_index]*1024+512;
 	struct joystick *j = joystick_port[port];
 	if (j && j->axes[axis_index]) {
 		struct joystick_control *axis = j->axes[axis_index];
@@ -925,6 +927,7 @@ int joystick_read_axis(int port, int axis_index) {
 }
 
 static inline int read_button(int port, int button_index) {
+	if (port==0 && av_poll_pointer()) return (av_pointer[2] >> (2*button_index)) & 1;
 	struct joystick *j = joystick_port[port];
 	if (j && j->buttons[button_index]) {
 		struct joystick_control *button = j->buttons[button_index];
